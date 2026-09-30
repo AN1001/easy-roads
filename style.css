@@ -1,0 +1,3 @@
+body { margin: 0; overflow: hidden; background: #000; }
+/* pixelated: scale the small canvas up in sharp square blocks, not smoothed. main.js sizes it. */
+canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; }
