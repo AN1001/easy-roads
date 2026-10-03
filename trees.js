@@ -22,7 +22,7 @@
 // the next colour along; its fallen leaves under it in the same colours.
 
 import { BARK, BLOSSOM, PETALS, LEAF } from './textures.js';
-import { BLOCK_FLOATS } from './blocks.js';
+import { BLOCK_FLOATS, shareVertices } from './blocks.js';
 
 const SIDES = 6, TWIG_SIDES = 4;
 const TRUNK_RADIUS = 0.24, TRUNK_TOP_RADIUS = 0.17;  // m
@@ -60,20 +60,31 @@ const unit = a => { const n = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / 
 
 // Where the models are written: typed arrays, reused (pushing onto a plain array, and copying it
 // into a typed one at the end, measured 6.5 ms a tree in headless Chrome, a stutter as each came
-// into reach); grown if need be. `off`: the vertices aren't written (the tree's shape still grows
-// the same, from the same random numbers). The near model's wood and petals, the crown's cards
-// (both models'), the far model's wood and petals.
-const writer = () => ({ data: new Float32Array(1 << 16), n: 0, off: false });
+// into reach); grown if need be. Each vertex once, and the triangles as its vertices' numbers
+// (`indices`, `ni` of them): what triangles side by side share (a tube's sides, a card's corners,
+// the fallen petals' cards' corners) is shaded once. (Every triangle's three corners its own until 3
+// Oct 2026: a near model ~2.2 times the vertices, the far one ~1.75 times.) `off`: nothing's
+// written (the tree's shape still grows the same, from the same random numbers). The near model's
+// wood and petals, the crown's cards (both models'), the far model's wood and petals.
+const writer = () => ({ data: new Float32Array(1 << 15), n: 0, indices: new Uint32Array(1 << 14), ni: 0, off: false });
 const nearWood = writer(), cards = writer(), nearPetals = writer(), farWood = writer(), farPetals = writer();
 
-// A vertex, in blocks.js's layout.
+// A vertex, in blocks.js's layout; returns its number.
 function vertex(out, p, n, u, v, color, layer) {
-  if (out.off) return;
+  if (out.off) return 0;
   if (out.n + BLOCK_FLOATS > out.data.length) { const bigger = new Float32Array(out.data.length * 2); bigger.set(out.data); out.data = bigger; }
   const d = out.data, i = out.n;
   d[i] = p[0]; d[i + 1] = p[1]; d[i + 2] = p[2]; d[i + 3] = n[0]; d[i + 4] = n[1]; d[i + 5] = n[2];
   d[i + 6] = u; d[i + 7] = v; d[i + 8] = color[0]; d[i + 9] = color[1]; d[i + 10] = color[2]; d[i + 11] = layer;
   out.n = i + BLOCK_FLOATS;
+  return i / BLOCK_FLOATS;
+}
+// A triangle, by its corners' numbers.
+function triangle(out, a, b, c) {
+  if (out.off) return;
+  if (out.ni + 3 > out.indices.length) { const bigger = new Uint32Array(out.indices.length * 2); bigger.set(out.indices); out.indices = bigger; }
+  out.indices[out.ni] = a; out.indices[out.ni + 1] = b; out.indices[out.ni + 2] = c;
+  out.ni += 3;
 }
 
 // A tapered tube from a (radius ra) to b (radius rb), its bark's v starting at `v0` m up it.
@@ -89,11 +100,14 @@ function tube(out, a, b, ra, rb, v0, sides = SIDES, color = BARK_COLOR) {
     ns.push(n); ps.push(add(a, n, ra)); qs.push(add(b, n, rb)); us.push(angle * TRUNK_RADIUS);
   }
   const v1 = v0 + length;
+  // Round each end, a vertex a corner (the first again at the last, for the bark's u); each side
+  // two triangles, wound anticlockwise seen from outside (unlit from inside: drawn without culling
+  // anyway).
+  const first = out.n / BLOCK_FLOATS;
+  for (let k = 0; k <= sides; k++) { vertex(out, ps[k], ns[k], us[k], v0, color, BARK); vertex(out, qs[k], ns[k], us[k], v1, color, BARK); }
   for (let k = 0; k < sides; k++) {
-    const p0 = ps[k], p1 = ps[k + 1], q0 = qs[k], q1 = qs[k + 1], n0 = ns[k], n1 = ns[k + 1], u0 = us[k], u1 = us[k + 1];
-    // Wound anticlockwise seen from outside (unlit from inside: drawn without culling anyway).
-    vertex(out, p0, n0, u0, v0, color, BARK); vertex(out, q0, n0, u0, v1, color, BARK); vertex(out, q1, n1, u1, v1, color, BARK);
-    vertex(out, p0, n0, u0, v0, color, BARK); vertex(out, q1, n1, u1, v1, color, BARK); vertex(out, p1, n1, u1, v0, color, BARK);
+    const p0 = first + 2 * k, q0 = p0 + 1, p1 = p0 + 2, q1 = p0 + 3;
+    triangle(out, p0, q0, q1); triangle(out, p0, q1, p1);
   }
   return v0 + length;
 }
@@ -145,7 +159,8 @@ function crownCards(out, random, points, crown, cards, grow, maple, hue) {
       const shade = 0.6 + 0.5 * random();
       const own = maple ? MAPLE_COLORS[Math.min(hue + (random() < 0.3 ? 1 : 0), MAPLE_COLORS.length - 1)] : BLOSSOM_COLOR;
       const color = own.map(c => c * shade);
-      for (const k of [0, 1, 2, 0, 2, 3]) vertex(out, p[k], normal, uv[k][0], uv[k][1], color, maple ? LEAF : BLOSSOM);
+      const ids = p.map((corner, k) => vertex(out, corner, normal, uv[k][0], uv[k][1], color, maple ? LEAF : BLOSSOM));
+      triangle(out, ids[0], ids[1], ids[2]); triangle(out, ids[0], ids[2], ids[3]);
     }
   }
 }
@@ -153,35 +168,43 @@ function crownCards(out, random, points, crown, cards, grow, maple, hue) {
 // The fallen petals (or leaves): a card on each square of the ground's grid (every `every`th line
 // of it) within PETALS_REACH m, its corners on the ground (2 cm above), the texture laid by where
 // it is from the trunk, turned by `angle`, so it runs on from one card to the next.
+// Neighbouring cards share their corners (each the same vertex): `corners` holds each point of the
+// grid's vertex number, once it has one.
+const UP = [0, 1, 0], corners = new Int32Array(1024);
 function fallenCards(out, tree, angle, color, every) {
   if (out.off) return;
   const n = tree.groundSize, step = tree.groundStep, half = (n - 1) / 2, g = tree.ground;
   const c = Math.cos(angle), s = Math.sin(angle);
+  corners.fill(-1, 0, n * n);
+  const at = (i, j) => {
+    if (corners[j * n + i] < 0) {
+      const p = [tree.x + (i - half) * step, g[j * n + i] + 0.02 * every, tree.z + (j - half) * step], dx = p[0] - tree.x, dz = p[2] - tree.z;
+      corners[j * n + i] = vertex(out, p, UP, c * dx - s * dz, s * dx + c * dz, color, PETALS);
+    }
+    return corners[j * n + i];
+  };
   for (let b = 0; b + every < n; b += every) {
     for (let a = 0; a + every < n; a += every) {
       if (Math.hypot((a + every / 2 - half) * step, (b + every / 2 - half) * step) > PETALS_REACH + (every - 1) * step / 2) continue;
-      const at = (i, j) => [tree.x + (a + i - half) * step, g[(b + j) * n + a + i] + 0.02 * every, tree.z + (b + j - half) * step];
-      const p = [at(0, 0), at(every, 0), at(every, every), at(0, every)];
-      for (const k of [0, 2, 1, 0, 3, 2]) {
-        const dx = p[k][0] - tree.x, dz = p[k][2] - tree.z;
-        vertex(out, p[k], [0, 1, 0], c * dx - s * dz, s * dx + c * dz, color, PETALS);
-      }
+      const p0 = at(a, b), p1 = at(a + every, b), p2 = at(a + every, b + every), p3 = at(a, b + every);
+      triangle(out, p0, p2, p1); triangle(out, p0, p3, p2);
     }
   }
 }
 
-// The models of one tree, as BLOCK_FLOATS numbers a vertex, one after the other in `data`: near
-// (its wood, its blossom or leaves, its fallen petals or leaves), the first `near` vertices; and far
-// (from TREE_LOD m: main.js), the rest: the same crown, card for card, but only the trunk, limbs and
-// branches under it (no twigs: hidden in the crown, and most of the vertices), three-sided, and its
-// petals on cards twice the size: ~3,400 vertices against ~9,100. (A third of the cards, twice the
-// size, until 3 Oct 2026: the tree changed too much as it came near.)
+// The models of one tree: their vertices, BLOCK_FLOATS numbers each (`vertices`), and their
+// triangles (`indices`, 16-bit while they reach): near (its wood, its blossom or leaves, its fallen
+// petals or leaves), the first `near` indices; and far (from TREE_LOD m: main.js), the rest: the
+// same crown, card for card (the same vertices), but only the trunk, limbs and branches under it (no
+// twigs: hidden in the crown, and most of the vertices), three-sided, and its petals on cards twice
+// the size: ~3,400 corners of triangles against ~9,100. (A third of the cards, twice the size, until
+// 3 Oct 2026: the tree changed too much as it came near.)
 //
 // Or, if not `detailed`, only the far model (`near` 0): until a tree comes near, that's all that's
 // drawn of it, and it's less to make.
 export function treeModel(tree, detailed = true) {
   const clusters = [], limbs = [], random = generator(tree.seed), maple = tree.kind === 'maple';
-  for (const w of [nearWood, cards, nearPetals, farWood, farPetals]) w.n = 0;
+  for (const w of [nearWood, cards, nearPetals, farWood, farPetals]) { w.n = 0; w.ni = 0; }
   nearWood.off = !detailed;
   const bark = maple ? MAPLE_BARK : BARK_COLOR;
   const base = [tree.x, tree.y - BURIED, tree.z];
@@ -206,11 +229,17 @@ export function treeModel(tree, detailed = true) {
     tube(farWood, from, middle, ra, rm, 0, 3, bark);
     tube(farWood, middle, end, rm, re, 0, 3, bark);
   }
-  const parts = detailed ? [nearWood, cards, nearPetals, farWood, cards, farPetals] : [farWood, cards, farPetals];
-  const data = new Float32Array(parts.reduce((n, w) => n + w.n, 0));
-  let at = 0;
-  for (const w of parts) { data.set(w.data.subarray(0, w.n), at); at += w.n; }
-  return { data, near: detailed ? (nearWood.n + cards.n + nearPetals.n) / BLOCK_FLOATS : 0 };
+  // Each part's vertices once, one after the other; the near model's triangles, then the far one's,
+  // each part's numbered from where its vertices start.
+  const parts = detailed ? [nearWood, cards, nearPetals, farWood, farPetals] : [farWood, cards, farPetals];
+  const near = detailed ? [nearWood, cards, nearPetals] : [], far = [farWood, cards, farPetals];
+  const vertices = new Float32Array(parts.reduce((n, w) => n + w.n, 0));
+  const count = vertices.length / BLOCK_FLOATS, size = [...near, ...far].reduce((n, w) => n + w.ni, 0);
+  const indices = count < 65536 ? new Uint16Array(size) : new Uint32Array(size);
+  let at = 0, i = 0;
+  for (const w of parts) { vertices.set(w.data.subarray(0, w.n), at); w.first = at / BLOCK_FLOATS; at += w.n; }
+  for (const w of [...near, ...far]) for (let k = 0; k < w.ni; k++) indices[i++] = w.indices[k] + w.first;
+  return { vertices, indices, near: near.reduce((n, w) => n + w.ni, 0) };
 }
 
 // --- Broadleaf trees: the model from assets/tree_01 (bench/tree01.py made it from laubbaum.blend):
@@ -223,7 +252,8 @@ const BARK_FROM_U = 2 / 3;          // the texture's bark, from here across
 const BROADLEAF_SCALE = 0.8, BROADLEAF_SCALE_MORE = 0.4;  // its size, and up to this much more
 const BROADLEAF_TRUNK = 0.2;        // m: its trunk's radius at its usual size (measured 0.15-0.23, 0.3-1 m up)
 
-// The three shapes, as triangles, BROADLEAF_FLOATS a vertex: { vertices, count } each. The bark
+// The three shapes, as triangles, BROADLEAF_FLOATS a vertex: { vertices, indices } each (16-bit:
+// 720 corners each, shared by the triangles round them: blocks.js's shareVertices). The bark
 // smooth-shaded (each vertex's normal the average of its faces'); the leaf and twig cards lit as if
 // facing out from the middle of the crown and up, as the cherries' blossom is. How much a vertex
 // sways: none on the bark, the leaves more the higher they are.
@@ -255,7 +285,7 @@ export async function loadBroadleaf(url = 'assets/tree_01/tree_01.obj') {
         }
       }
     }
-    shapes.push({ vertices: new Float32Array(out), count: out.length / BROADLEAF_FLOATS });
+    shapes.push(shareVertices(new Float32Array(out), BROADLEAF_FLOATS));
     vBase += positions.length; tBase += uvs.length;
     positions = []; uvs = []; faces = [];
   };

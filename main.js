@@ -7,7 +7,7 @@ import { createTextures, createPuddles, puddleAt, TEXTURE_SIZE, TEXTURE_LAYERS, 
 import { createBambooModel, createBamboo, LIST_WIDTH, LIST_ROWS, STALK_WIDTH } from './bamboo.js';
 import { createParticles, updateParticles, kickUp, MAX_PARTICLES, PARTICLE_FLOATS } from './particles.js';
 import { createProfiler } from './profiler.js';
-import { BLOCK_FLOATS } from './blocks.js';
+import { BLOCK_FLOATS, shareVertices } from './blocks.js';
 import { bridgeBlocks, bridgeWall } from './bridges.js';
 import { treeModel, treeWall, treesNear, loadBroadleaf, broadleafLook, BROADLEAF_FLOATS } from './trees.js';
 import { scatter, rockWall, copiesNear, KINDS, NATURE_FLOATS, INSTANCE_FLOATS } from './nature.js';
@@ -174,9 +174,10 @@ const wheelIndexCount = carMeshes.wheel.indices.length;
 // whenever terrain.js finds a different set, every few hundred metres at most. Per vertex:
 // position, normal, texture coordinate, colour and texture layer.
 // The cherry trees (trees.js) the same way, but each in a buffer of its own, from a pool of
-// TREE_SLOTS made at the start: a tree found gets a free one, filled once with its model (~9,000
-// vertices, ~0.44 MB), kept while it's near. (All of them in one buffer, refilled whenever one came
-// or went, was ~11 MB each time.)
+// TREE_SLOTS made at the start: a tree found gets a free one, filled once with its model (~4,000
+// vertices, ~0.2 MB), kept while it's near. (All of them in one buffer, refilled whenever one came
+// or went, was ~11 MB each time.) Both drawn with indices (blocks.js's shareVertices, trees.js), each
+// slot and the bridges' with an index buffer of their own, in their VAO.
 const TREE_SLOTS = 48;
 // From TREE_LOD m, a tree's far model (trees.js). Each is culled by a box TREE_BOX m either side of
 // its trunk, up to TREE_HEIGHT m above its foot.
@@ -193,35 +194,53 @@ function createBuiltVao() {
     gl.enableVertexAttribArray(k);
     gl.vertexAttribPointer(k, size, gl.FLOAT, false, BLOCK_FLOATS * 4, 4 * at);
   });
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
   gl.bindVertexArray(null);
-  return [vao, buffer];
+  return { vao, buffer, indices: 0, type: gl.UNSIGNED_SHORT, size: 2 };
 }
-const [builtVao, builtBuffer] = createBuiltVao();
-const treeSlots = Array.from({ length: TREE_SLOTS }, () => { const [vao, buffer] = createBuiltVao(); return { vao, buffer, tree: null, vertices: 0, held: false }; });
+// Vertices and indices into a built VAO (each new storage: the last may still be drawn from).
+function fillBuilt(built, vertices, indices) {
+  gl.bindVertexArray(built.vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, built.buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);  // (the VAO's own)
+  gl.bindVertexArray(null);
+  built.indices = indices.length;
+  built.size = indices.BYTES_PER_ELEMENT;
+  built.type = built.size === 2 ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT;
+}
+const bridgeBuilt = createBuiltVao();
+const treeSlots = Array.from({ length: TREE_SLOTS }, () => Object.assign(createBuiltVao(), { tree: null, near: 0, held: false, range: 0 }));
 // A tree's model into its slot: `detailed`, its near one too; `held`, not drawn yet (see below).
 function makeTree(slot, tree, detailed, held) {
   const model = treeModel(tree, detailed);
-  gl.bindBuffer(gl.ARRAY_BUFFER, slot.buffer);
-  gl.bufferData(gl.ARRAY_BUFFER, model.data, gl.STATIC_DRAW);  // new storage: the last model may still be drawn from
+  fillBuilt(slot, model.vertices, model.indices);
   slot.tree = tree;
-  slot.near = model.near;
-  slot.vertices = model.data.length / BLOCK_FLOATS;
+  slot.near = model.near;  // indices
   slot.held = held;
 }
 const treeInView = tree => boxInFrustum(planes, tree.x - TREE_BOX, tree.y - 1, tree.z - TREE_BOX, tree.x + TREE_BOX, tree.y + TREE_HEIGHT, tree.z + TREE_BOX);
-let builtVersion = -1, builtVertices = 0, treesVersion = -1;
+let builtVersion = -1, treesVersion = -1;
 
 // The broadleaf trees (trees.js, tree.vert): their three shapes in one buffer, uploaded once; per
 // shape, a VAO reading it, and a buffer of the trees of that shape (where each stands, how it's
 // turned, its size: 5 floats), refilled whenever terrain.js finds a different set of trees, each
 // drawn with one call for all of them.
-const broadleafBuffer = gl.createBuffer();
+// Their indices in one buffer too, each shape's counted from its own first vertex.
+const broadleafBuffer = gl.createBuffer(), broadleafIndices = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, broadleafBuffer);
 {
   const all = new Float32Array(broadleafShapes.reduce((n, shape) => n + shape.vertices.length, 0));
-  let at = 0;
-  for (const shape of broadleafShapes) { shape.first = at / BROADLEAF_FLOATS; all.set(shape.vertices, at); at += shape.vertices.length; }
+  const indices = new Uint16Array(broadleafShapes.reduce((n, shape) => n + shape.indices.length, 0));
+  let at = 0, i = 0;
+  for (const shape of broadleafShapes) {
+    shape.first = at / BROADLEAF_FLOATS; all.set(shape.vertices, at); at += shape.vertices.length;
+    shape.firstIndex = i; indices.set(shape.indices, i); i += shape.indices.length;
+  }
   gl.bufferData(gl.ARRAY_BUFFER, all, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, broadleafIndices);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
 }
 // The ground cover (nature.js): every kind's model in one vertex buffer and one index buffer,
 // uploaded once; per kind, a VAO reading its model, and a buffer of its copies (INSTANCE_FLOATS
@@ -428,6 +447,7 @@ const broadleaf = broadleafShapes.map(shape => {
     gl.enableVertexAttribArray(k);
     gl.vertexAttribPointer(k, size, gl.FLOAT, false, BROADLEAF_FLOATS * 4, 4 * (shape.first * BROADLEAF_FLOATS + at));
   });
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, broadleafIndices);
   const instances = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, instances);
   [[4, 4, 0], [5, 1, 4]].forEach(([k, size, at]) => {
@@ -436,7 +456,7 @@ const broadleaf = broadleafShapes.map(shape => {
     gl.vertexAttribDivisor(k, 1);
   });
   gl.bindVertexArray(null);
-  return { vao, instances, vertices: shape.count, count: 0, list: new Float32Array(0) };
+  return { vao, instances, indices: shape.indices.length, firstIndex: shape.firstIndex, count: 0, list: new Float32Array(0) };
 });
 
 // Bamboo (bamboo.js): no vertex buffers, just a list of indices for the models, which the shaders
@@ -895,9 +915,8 @@ function frame(realMs) {
   if (terrain.bridgesVersion !== builtVersion) {
     const blocks = [];
     bridgeBlocks(terrain.bridges, blocks);
-    gl.bindBuffer(gl.ARRAY_BUFFER, builtBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(blocks), gl.STATIC_DRAW);
-    builtVertices = blocks.length / BLOCK_FLOATS;
+    const bridges = shareVertices(new Float32Array(blocks), BLOCK_FLOATS);
+    fillBuilt(bridgeBuilt, bridges.vertices, bridges.indices);
     builtVersion = terrain.bridgesVersion;
   }
   if (terrain.treesVersion !== treesVersion) {
@@ -1030,10 +1049,10 @@ function frame(realMs) {
   profiler?.end();
 
   // The bridges: few, and in front of the land under them.
-  if (builtVertices) {
+  if (bridgeBuilt.indices) {
     gl.useProgram(builtProgram);
-    gl.bindVertexArray(builtVao);
-    gl.drawArrays(gl.TRIANGLES, 0, builtVertices);
+    gl.bindVertexArray(bridgeBuilt.vao);
+    gl.drawElements(gl.TRIANGLES, bridgeBuilt.indices, bridgeBuilt.type, 0);
   }
   // The cherry and maple trees: both sides of the blossom's and leaves' cards.
   profiler?.begin(9);
@@ -1057,14 +1076,14 @@ function frame(realMs) {
   treesDrawn.sort(byRange);
   for (const slot of treesDrawn) {
     gl.bindVertexArray(slot.vao);
-    if (slot.range < TREE_LOD && slot.near) gl.drawArrays(gl.TRIANGLES, 0, slot.near);
-    else gl.drawArrays(gl.TRIANGLES, slot.near, slot.vertices - slot.near);
+    if (slot.range < TREE_LOD && slot.near) gl.drawElements(gl.TRIANGLES, slot.near, slot.type, 0);
+    else gl.drawElements(gl.TRIANGLES, slot.indices - slot.near, slot.type, slot.near * slot.size);
   }
   gl.useProgram(treeProgram);
   for (const shape of broadleaf) {
     if (!shape.count) continue;
     gl.bindVertexArray(shape.vao);
-    gl.drawArraysInstanced(gl.TRIANGLES, 0, shape.vertices, shape.count);
+    gl.drawElementsInstanced(gl.TRIANGLES, shape.indices, gl.UNSIGNED_SHORT, 2 * shape.firstIndex, shape.count);
   }
   profiler?.end();
   // The ground cover: ferns, rocks, then bushes (both sides of the fronds and cards).

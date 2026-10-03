@@ -8,6 +8,37 @@ export const BLOCK_FLOATS = 12;
 
 import { WOOD } from './textures.js';
 
+// The same triangles (`data`: `floats` numbers a vertex, three vertices a triangle, a Float32Array),
+// with each vertex stored once and the triangles as indices into them: { vertices, indices }
+// (16-bit indices while they reach). Vertices alike in every number are the same one. Drawn with
+// indices, the GPU shades a vertex the triangles round it share once rather than once for each: a
+// tube's sides, a card's corners, the petals' cards' shared corners (drawn without, until 3 Oct
+// 2026: up to 6 times over).
+export function shareVertices(data, floats) {
+  const count = data.length / floats, bits = new Uint32Array(data.buffer, data.byteOffset, data.length);
+  const size = 2 ** Math.ceil(Math.log2(2 * count + 2)), table = new Int32Array(size).fill(-1);  // where each is kept: open addressing
+  const vertices = new Float32Array(data.length), indices = new Uint32Array(count), kept = new Uint32Array(vertices.buffer);
+  let unique = 0;
+  for (let v = 0; v < count; v++) {
+    const from = v * floats;
+    let h = 0;
+    for (let f = 0; f < floats; f++) h = Math.imul(h ^ bits[from + f], 0x9e3779b1) ^ h >>> 15;
+    for (let at = h & size - 1; ; at = at + 1 & size - 1) {
+      const u = table[at];
+      if (u < 0) {
+        table[at] = unique;
+        kept.set(bits.subarray(from, from + floats), unique * floats);
+        indices[v] = unique++;
+        break;
+      }
+      let same = true;
+      for (let f = 0; f < floats && same; f++) same = kept[u * floats + f] === bits[from + f];
+      if (same) { indices[v] = u; break; }
+    }
+  }
+  return { vertices: vertices.slice(0, unique * floats), indices: unique < 65536 ? Uint16Array.from(indices) : indices };
+}
+
 // Materials: a colour (multiplied by the texture, which averages 1), a layer, and which way the
 // texture's grain (its v) runs: up, along the frame, or across it.
 export const UP = 0, ALONG = 1, ACROSS = 2;

@@ -258,8 +258,8 @@ export function createBamboo(terrain, far) {
       sum = 255 * squares;
     } else {
       const whole = Math.round(255 * appear);
-      for (let q = 0; q < squares; q++) {
-        const dx = slot.x + (q % across + 0.5) * CLUMP - camX, dz = slot.z + (Math.floor(q / across) + 0.5) * CLUMP - camZ;
+      for (let q = 0, row = 0, column = 0; q < squares; q++, column = column === across - 1 ? (row++, 0) : column + 1) {
+        const dx = slot.x + (column + 0.5) * CLUMP - camX, dz = slot.z + (row + 0.5) * CLUMP - camZ;
         const d2 = dx * dx + dz * dz, from = swapAt[o + q] - FADE / 2, to = from + FADE;  // all stalks, to all clump
         sum += shares[o + q] = d2 <= from * from ? whole : d2 >= to * to ? 0 : Math.round(255 * appear * (to - Math.sqrt(d2)) / FADE);
       }
@@ -284,6 +284,25 @@ export function createBamboo(terrain, far) {
     }
     return crossed;
   }
+  // The same for a stalk's box (`stalkReach` round its foot, from it to its top) and a clump's
+  // (CLUMP_REACH round, as tall as it is), with less work: per plane (left, right, near), a·x + b·y +
+  // c·z, and what the box's reach and height add on the visible side (see plan). True if it's
+  // entirely outside one of those in `mask`.
+  const stalkPlanes = new Float64Array(15), clumpPlanes = new Float64Array(15);
+  function plan(planes) {
+    for (let k = 0, p = 0; k < 15; k += 5, p += p === 4 ? 12 : 4) {
+      const a = planes[p], b = planes[p + 1], c = planes[p + 2], d = planes[p + 3], across = Math.abs(a) + Math.abs(c);
+      stalkPlanes[k] = clumpPlanes[k] = a; stalkPlanes[k + 1] = clumpPlanes[k + 1] = b; stalkPlanes[k + 2] = clumpPlanes[k + 2] = c;
+      stalkPlanes[k + 3] = 0.5 * across + Math.max(b, 0); stalkPlanes[k + 4] = d + 0.5 * across;  // stalkReach(h) = 0.5 + 0.5 h
+      clumpPlanes[k + 3] = Math.max(b, 0); clumpPlanes[k + 4] = d + CLUMP_REACH * across;
+    }
+  }
+  function boxOutside(table, mask, x, y, z, h) {
+    for (let k = 0, bit = 1; k < 15; k += 5, bit <<= 1) {
+      if (mask & bit && table[k] * x + table[k + 1] * y + table[k + 2] * z + table[k + 3] * h + table[k + 4] < 0) return true;
+    }
+    return false;
+  }
 
   const bent = s => {  // a stalk's bend, as the low 24 bits of the list's second number
     const o = 4 * s, x = Math.min(Math.max(bends[o], -1), 1), z = Math.min(Math.max(bends[o + 1], -1), 1);
@@ -303,6 +322,7 @@ export function createBamboo(terrain, far) {
       drawnIn[i] = frame;
     }
     const camX = camera.x, camZ = camera.z;
+    plan(planes);
 
     // Stalks, nearest chunk first.
     for (let k = 0; k < terrain.drawCount; k++) {
@@ -323,10 +343,10 @@ export function createBamboo(terrain, far) {
       const nearTo = NEAR_BY + NEAR_FADE / 2, near = gap2 < nearTo * nearTo;
       const bendRow = slot.level === 0 && movingIn[slot.index] > 0 ? slot.index * MAX_STALKS : -1;  // any bent
       let n = NEAR_ROOM + farCount;
-      for (let q = 0; q < across * across; q++) {
+      for (let q = 0, row = 0, column = 0; q < across * across; q++, column = column === across - 1 ? (row++, 0) : column + 1) {
         const shown = shares[o + q], from = starts[q], to = starts[q + 1];
         if (!shown || from === to) continue;
-        const x0 = slot.x + (q % across) * CLUMP - LEAN, z0 = slot.z + Math.floor(q / across) * CLUMP - LEAN;
+        const x0 = slot.x + column * CLUMP - LEAN, z0 = slot.z + row * CLUMP - LEAN;
         let crossed = 0;
         if (mask) {
           crossed = crossing(planes, mask, x0, minY, z0, x0 + CLUMP + 2 * LEAN, maxY, z0 + CLUMP + 2 * LEAN);
@@ -346,8 +366,8 @@ export function createBamboo(terrain, far) {
         for (let i = from; i < to; i++) {
           const moved = bendRow >= 0 && isMoving[bendRow + i] === 1;
           if (crossed && !moved) {  // a bent one could be anywhere near
-            const f = i * STALK_FLOATS, h = stalks[f + 3], r = stalkReach(h);
-            if (crossing(planes, crossed, stalks[f] - r, stalks[f + 1], stalks[f + 2] - r, stalks[f] + r, stalks[f + 1] + h, stalks[f + 2] + r) < 0) continue;
+            const f = i * STALK_FLOATS;
+            if (boxOutside(stalkPlanes, crossed, stalks[f], stalks[f + 1], stalks[f + 2], stalks[f + 3])) continue;
           }
           const bend = moved ? bent(bendRow + i) : 0;
           let left = shown;
@@ -399,7 +419,7 @@ export function createBamboo(terrain, far) {
           if (dx * dx + dz * dz > far * far) continue;
         }
         const y = clumps[f + 1];
-        if (mask && crossing(planes, mask, x - CLUMP_REACH, y, z - CLUMP_REACH, x + CLUMP_REACH, y + clumps[f + 3], z + CLUMP_REACH) < 0) continue;
+        if (mask && boxOutside(clumpPlanes, mask, x, y, z, clumps[f + 3])) continue;
         list[2 * n] = id | i; list[2 * n++ + 1] = shown << 24;
       }
     }
