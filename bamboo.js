@@ -60,16 +60,18 @@ export function createBambooModel() {
 }
 
 // This frame's list, for the GPU: an integer texture LIST_WIDTH entries wide (must match
-// bamboo.glsl), each two numbers. The first says which stalk or clump: for a stalk, its first texel
-// in the stalks' texture; for a clump, its chunk slot, which is its row of the clumps' texture, ×
-// 1024, + its number in the chunk. The second is how far the car has bent a stalk, along x and z, as
-// two signed 12-bit fractions (× 2047), and above them how much of the stalk or clump is there,
-// 0-255 (all of it): the rest has dissolved (bamboo.glsl). Near stalks first, then far ones, then
-// clumps, each nearest chunk first, so nearer ones hide what's behind. The near ones have the first
-// NEAR_ROOM entries to themselves (~200-400 used): the far ones start after, so they can be written
-// straight into place.
+// bamboo.glsl), a 32-bit number each. Its low 20 bits say which stalk or clump: for a stalk, its first
+// texel in the stalks' texture; for a clump, its chunk slot, which is its row of the clumps' texture,
+// × 1024, + its number in the chunk. BENT marks a stalk the car has bent; and the top 8 bits are how
+// much of the stalk or clump is there, 0-255 (all of it): the rest has dissolved (bamboo.glsl). How
+// far a bent one is bent, along x and z, as two signed 12-bit fractions (× 2047), is at the same entry
+// of `listBends`, for a texture the same shape, of which only what's needed is uploaded: none, mostly. (Two
+// numbers an entry until 3 Oct 2026, the bend in every one: twice the bytes uploaded each frame,
+// ~74-97 KB.) Near stalks first, then far ones, then clumps, each nearest chunk first, so nearer ones
+// hide what's behind. The near ones have the first NEAR_ROOM entries to themselves (~200-400 used):
+// the far ones start after, so they can be written straight into place.
 export const LIST_WIDTH = 1024, LIST_ROWS = 32;  // 32,768 entries: ~12,000 used, with the near ones' room
-const NEAR_ROOM = 2048;
+const NEAR_ROOM = 2048, BENT = 1 << 20;
 // The stalks' texture: STALK_WIDTH texels wide (must match bamboo.glsl), 2 texels a stalk, each
 // slot's one after another (stalkBase): a level-0 chunk's in half a row, a level-1 chunk's in two.
 export const STALK_WIDTH = 1600;
@@ -124,9 +126,11 @@ function squareRandom(x, z) {
 export function createBamboo(terrain, far) {
   const slots = terrain.slots;
   const level0 = slots.filter(slot => slot.level === 0).length;  // level 0's slots, which come first
-  const list = new Uint32Array(LIST_WIDTH * LIST_ROWS * 2);
+  const list = new Uint32Array(LIST_WIDTH * LIST_ROWS), listBends = new Uint32Array(LIST_WIDTH * LIST_ROWS);
   const capacity = LIST_WIDTH * LIST_ROWS;
   let nearCount = 0, farCount = 0, clumpCount = 0;
+  // This frame's bent entries: how many near ones, and the first and last far one (-1: none).
+  let nearBent = 0, firstBent = -1, lastBent = -1;
 
   // Per slot that plants stalks: where its stalks start in their texture (texels, for main.js), and
   // its squares in swapAt and shares.
@@ -311,7 +315,7 @@ export function createBamboo(terrain, far) {
 
   // This frame's list, seen from `camera` ({ x, y, z }) through `planes`, at `time` (s).
   function update(camera, planes, time) {
-    nearCount = 0; farCount = 0; clumpCount = 0;
+    nearCount = 0; farCount = 0; clumpCount = 0; nearBent = 0; firstBent = lastBent = -1;
     // Which chunks the land is drawn from (terrain.js's choice, nearest first), and since when.
     // Stalks and clumps are drawn only from those: a chunk can be built while its coarser parent is
     // still drawn in its place (until its three neighbours are built too).
@@ -360,7 +364,7 @@ export function createBamboo(terrain, far) {
         }
         if (!crossed && !nearHere && bendRow < 0) {  // all of them, as they come (most of them)
           const second = shown << 24;
-          for (let i = from; i < to; i++) { list[2 * n] = base + 2 * i; list[2 * n++ + 1] = second; }
+          for (let i = from; i < to; i++) list[n++] = second | base + 2 * i;
           continue;
         }
         for (let i = from; i < to; i++) {
@@ -377,11 +381,17 @@ export function createBamboo(terrain, far) {
             const d = NEAR_FROM + (NEAR_BY - NEAR_FROM) * (r < 0 ? r + 1 : r);
             const t = Math.min(Math.max((d - Math.sqrt(dx * dx + dz * dz)) / NEAR_FADE + 0.5, 0), 1);  // 1: all near
             const nearShown = Math.round(shown * t);
-            if (nearShown) { list[2 * nearCount] = base + 2 * i; list[2 * nearCount++ + 1] = nearShown << 24 | bend; }
+            if (nearShown) {
+              list[nearCount] = nearShown << 24 | (bend ? BENT : 0) | base + 2 * i;
+              if (bend) { listBends[nearCount] = bend; nearBent++; }
+              nearCount++;
+            }
             left -= nearShown;
             if (!left) continue;
           }
-          list[2 * n] = base + 2 * i; list[2 * n++ + 1] = left << 24 | bend;
+          list[n] = left << 24 | (bend ? BENT : 0) | base + 2 * i;
+          if (bend) { listBends[n] = bend; if (firstBent < 0) firstBent = n; lastBent = n; }
+          n++;
         }
       }
       farCount = n - NEAR_ROOM;
@@ -420,14 +430,16 @@ export function createBamboo(terrain, far) {
         }
         const y = clumps[f + 1];
         if (mask && boxOutside(clumpPlanes, mask, x, y, z, clumps[f + 3])) continue;
-        list[2 * n] = id | i; list[2 * n++ + 1] = shown << 24;
+        list[n++] = shown << 24 | id | i;
       }
     }
     clumpCount = n - NEAR_ROOM - farCount;
   }
 
   return {
-    list, bend, replant, update, stalkBase, stalkRows: Math.ceil(texels / STALK_WIDTH),
+    list, listBends, bend, replant, update, stalkBase, stalkRows: Math.ceil(texels / STALK_WIDTH),
+    // The bent entries: how many near ones (from 0), and the first and last far one (-1: none).
+    get nearBent() { return nearBent; }, get firstBent() { return firstBent; }, get lastBent() { return lastBent; },
     // Where in the list: the near stalks from 0, the far ones from farFrom, the clumps from clumpsFrom; and
     // how long it is, all told.
     get near() { return nearCount; }, get far() { return farCount; }, get clumps() { return clumpCount; },

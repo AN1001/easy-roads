@@ -510,7 +510,7 @@ function dataTexture(unit, format, width, height) {
   // part of it, slowly, warning each time (1 Oct 2026).
   if (format === gl.RGBA32F) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.FLOAT, new Float32Array(width * height * 4));
   else if (format === gl.RGBA16I) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA_INTEGER, gl.SHORT, new Int16Array(width * height * 4));
-  else gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RG_INTEGER, gl.UNSIGNED_INT, new Uint32Array(width * height * 2));
+  else gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RED_INTEGER, gl.UNSIGNED_INT, new Uint32Array(width * height));
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);  // read with texelFetch, but
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);  // float textures can't filter
   gl.activeTexture(gl.TEXTURE0);
@@ -528,7 +528,8 @@ dataTexture(3, gl.RGBA32F, clumpWidth, terrain.slots.length);
 // chunk's rows of the bamboo's textures go through a buffer of their own (uploadTexels).
 const TURNS = 3;
 let turn = 0;
-const listTextures = Array.from({ length: TURNS }, () => dataTexture(4, gl.RG32UI, LIST_WIDTH, LIST_ROWS));
+const listTextures = Array.from({ length: TURNS }, () => dataTexture(4, gl.R32UI, LIST_WIDTH, LIST_ROWS));
+const bendTextures = Array.from({ length: TURNS }, () => dataTexture(8, gl.R32UI, LIST_WIDTH, LIST_ROWS));
 // The chunks' vertices (see chunkCopies) on unit 7; and per turn, the copies' buffer and a VAO
 // reading it (and the index list every chunk shares).
 dataTexture(7, gl.RGBA16I, CHUNK_VERTICES, terrain.slots.length);
@@ -631,6 +632,7 @@ const [stalkUniforms, leavesUniforms, clumpUniforms] = [stalkProgram, leavesProg
   gl.uniform1i(gl.getUniformLocation(program, 'uStalks'), 2);
   gl.uniform1i(gl.getUniformLocation(program, 'uClumps'), 3);
   gl.uniform1i(gl.getUniformLocation(program, 'uList'), 4);
+  gl.uniform1i(gl.getUniformLocation(program, 'uBends'), 8);
   return { first: gl.getUniformLocation(program, 'uFirst'), stride: gl.getUniformLocation(program, 'uStride') };
 });
 
@@ -1062,7 +1064,18 @@ function frame(realMs) {
   gl.activeTexture(gl.TEXTURE4);
   gl.bindTexture(gl.TEXTURE_2D, listTextures[turn]);
   if (entries) {
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, LIST_WIDTH, Math.ceil(entries / LIST_WIDTH), gl.RG_INTEGER, gl.UNSIGNED_INT, bamboo.list);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, LIST_WIDTH, Math.ceil(entries / LIST_WIDTH), gl.RED_INTEGER, gl.UNSIGNED_INT, bamboo.list);
+  }
+  // The bends, if any are bent: the near ones' row (or rows), and the far ones' from the first to the
+  // last bent. (None bent, nothing reads them: this turn's texture needn't even be bound.)
+  if (bamboo.nearBent || bamboo.firstBent >= 0) {
+    gl.activeTexture(gl.TEXTURE8);
+    gl.bindTexture(gl.TEXTURE_2D, bendTextures[turn]);
+    if (bamboo.nearBent) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, LIST_WIDTH, Math.ceil(bamboo.near / LIST_WIDTH), gl.RED_INTEGER, gl.UNSIGNED_INT, bamboo.listBends);
+    if (bamboo.firstBent >= 0) {
+      const from = Math.floor(bamboo.firstBent / LIST_WIDTH), to = Math.floor(bamboo.lastBent / LIST_WIDTH) + 1;
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, from, LIST_WIDTH, to - from, gl.RED_INTEGER, gl.UNSIGNED_INT, bamboo.listBends, from * LIST_WIDTH);
+    }
   }
   gl.activeTexture(gl.TEXTURE0);
 

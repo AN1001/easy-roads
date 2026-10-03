@@ -5,10 +5,13 @@
 // No vertex buffers (see bamboo.js): gl_VertexID is an entry of this frame's list × the model's
 // stride + the vertex's number in the model, counting entries from uFirst. The entry says which
 // stalk (or clump) it is: its first texel in uStalks (or its chunk's row of uClumps and its number
-// there).
+// there); whether the car's bent it (BENT: then how far is at the same entry of uBends); and how much
+// of it is there.
 
 const int LIST_WIDTH = 1024, STALK_WIDTH = 1600;  // must match bamboo.js
+const uint BENT = 1048576u;         // bamboo.js's
 uniform highp usampler2D uList;     // texture unit 4: this frame's (bamboo.js)
+uniform highp usampler2D uBends;    // texture unit 8: this frame's bends, at the entries marked BENT
 uniform highp sampler2D uStalks;    // texture unit 2: 2 texels a stalk (main.js)
 uniform int uFirst;                 // the entry this draw starts at
 uniform int uStride;                // vertices per stalk in this draw's model
@@ -21,30 +24,36 @@ vec4 stalk, look;
 vec2 bend;
 float shown;
 
-// The list's entry for this vertex, and (out) the vertex's number in the model.
-uvec2 loadEntry(out int k) {
+// The list's entry for this vertex, and (out) the vertex's number in the model and where the entry is.
+uint loadEntry(out int k, out ivec2 at) {
   int index = gl_VertexID / uStride, entry = uFirst + index;
   k = gl_VertexID - index * uStride;
-  return texelFetch(uList, ivec2(entry % LIST_WIDTH, entry / LIST_WIDTH), 0).xy;
+  at = ivec2(entry % LIST_WIDTH, entry / LIST_WIDTH);
+  return texelFetch(uList, at, 0).x;
 }
 
-// How much of an entry's stalk or clump is there, 0 to 1: the top 8 bits of its second number.
-float entryShown(uvec2 entry) {
-  return float(entry.y >> 24) / 255.0;
+// How much of an entry's stalk or clump is there, 0 to 1: its top 8 bits.
+float entryShown(uint entry) {
+  return float(entry >> 24) / 255.0;
 }
 
 // Loads the stalk this vertex belongs to, and returns the vertex's number in the model.
 int loadStalk() {
   int k;
-  uvec2 entry = loadEntry(k);
-  int texel = int(entry.x);
-  ivec2 at = ivec2(texel % STALK_WIDTH, texel / STALK_WIDTH);
-  stalk = texelFetch(uStalks, at, 0);
-  look = texelFetch(uStalks, at + ivec2(1, 0), 0);
+  ivec2 at;
+  uint entry = loadEntry(k, at);
+  int texel = int(entry & 0xfffffu);
+  ivec2 place = ivec2(texel % STALK_WIDTH, texel / STALK_WIDTH);
+  stalk = texelFetch(uStalks, place, 0);
+  look = texelFetch(uStalks, place + ivec2(1, 0), 0);
   // Two 12-bit signed fractions, x in the lowest bits. (Not unpackSnorm2x16: Firefox on macOS turns
   // it into desktop GLSL that needs an extension, which it switches on in the wrong place.)
-  vec2 halves = vec2(uvec2(entry.y, entry.y >> 12) & 0xfffu);
-  bend = (halves - step(2048.0, halves) * 4096.0) / 2047.0;
+  bend = vec2(0.0);
+  if ((entry & BENT) != 0u) {
+    uint bent = texelFetch(uBends, at, 0).x;
+    vec2 halves = vec2(uvec2(bent, bent >> 12) & 0xfffu);
+    bend = (halves - step(2048.0, halves) * 4096.0) / 2047.0;
+  }
   shown = entryShown(entry);
   return k;
 }

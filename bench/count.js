@@ -32,7 +32,8 @@
     [WebGL2RenderingContext.SHORT]: 2, [WebGL2RenderingContext.UNSIGNED_INT]: 4, [WebGL2RenderingContext.INT]: 4,
     [WebGL2RenderingContext.FLOAT]: 4 };
   const channels = { [WebGL2RenderingContext.RGBA]: 4, [WebGL2RenderingContext.RGBA_INTEGER]: 4, [WebGL2RenderingContext.RG]: 2,
-    [WebGL2RenderingContext.RG_INTEGER]: 2, [WebGL2RenderingContext.RED]: 1, [WebGL2RenderingContext.RGB]: 3 };
+    [WebGL2RenderingContext.RG_INTEGER]: 2, [WebGL2RenderingContext.RED]: 1, [WebGL2RenderingContext.RED_INTEGER]: 1,
+    [WebGL2RenderingContext.RGB]: 3 };
 
   function perProgram() {
     const name = program ? names.get(program) ?? '?' : 'none';
