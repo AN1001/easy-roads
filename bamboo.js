@@ -267,24 +267,22 @@ export function createBamboo(terrain, far) {
     return shareSums[i] = sum;
   }
 
-  // True when the box is entirely outside the camera's left, right or near plane (`planes`, as
-  // frustumPlanes gives them): the top and bottom ones rarely cut off anything as tall as a stalk.
-  function outside(planes, minX, minY, minZ, maxX, maxY, maxZ) {
-    for (let p = 0; p < 20; p += p === 4 ? 12 : 4) {  // planes 0, 1, 4
-      const a = planes[p], b = planes[p + 1], c = planes[p + 2];
-      const x = a > 0 ? maxX : minX, y = b > 0 ? maxY : minY, z = c > 0 ? maxZ : minZ;
-      if (a * x + b * y + c * z + planes[p + 3] < 0) return true;
+  // Of the camera's left, right and near planes (`planes`, as frustumPlanes gives them: 0, 1 and 4;
+  // the top and bottom ones rarely cut off anything as tall as a stalk), those in `mask` (bits 1, 2
+  // and 4): -1 if the box is entirely outside one of them; else those it reaches across (isn't
+  // entirely inside), as bits. A box inside another needs testing only against the planes the other
+  // reaches across: a chunk's box, then its squares' (inside it), then their stalks' (inside those).
+  // (Until 3 Oct 2026, each against all three, twice: most of the time the list took.)
+  function crossing(planes, mask, minX, minY, minZ, maxX, maxY, maxZ) {
+    let crossed = 0;
+    for (let bit = 1; bit <= 4; bit <<= 1) {
+      if (!(mask & bit)) continue;
+      const p = bit === 4 ? 16 : 4 * (bit - 1), a = planes[p], b = planes[p + 1], c = planes[p + 2], d = planes[p + 3];
+      // The corner furthest to the visible side (outside if even that is), then the furthest from it.
+      if (a * (a > 0 ? maxX : minX) + b * (b > 0 ? maxY : minY) + c * (c > 0 ? maxZ : minZ) + d < 0) return -1;
+      if (a * (a > 0 ? minX : maxX) + b * (b > 0 ? minY : maxY) + c * (c > 0 ? minZ : maxZ) + d < 0) crossed |= bit;
     }
-    return false;
-  }
-  // True when it's entirely inside them: then nothing in it needs checking.
-  function inside(planes, minX, minY, minZ, maxX, maxY, maxZ) {
-    for (let p = 0; p < 20; p += p === 4 ? 12 : 4) {
-      const a = planes[p], b = planes[p + 1], c = planes[p + 2];
-      const x = a > 0 ? minX : maxX, y = b > 0 ? minY : maxY, z = c > 0 ? minZ : maxZ;
-      if (a * x + b * y + c * z + planes[p + 3] < 0) return false;
-    }
-    return true;
+    return crossed;
   }
 
   const bent = s => {  // a stalk's bend, as the low 24 bits of the list's second number
@@ -319,7 +317,7 @@ export function createBamboo(terrain, far) {
       if (!boxInFrustum(planes, minX, minY, minZ, maxX, maxY, maxZ)) continue;
       if (!share(slot, camX, camZ, time)) continue;  // all clumps
       // Square by square: in view, wholly or partly (then stalk by stalk), and how much of it is stalks.
-      const all = inside(planes, minX, minY, minZ, maxX, maxY, maxZ), o = squareBase[slot.index];
+      const mask = crossing(planes, 7, minX, minY, minZ, maxX, maxY, maxZ), o = squareBase[slot.index];
       if (NEAR_ROOM + farCount + slot.stalkCount > capacity) break;  // never, at ~9,000 stalks
       const stalks = slot.stalks, starts = slot.squareStarts, base = stalkBase[slot.index];
       const nearTo = NEAR_BY + NEAR_FADE / 2, near = gap2 < nearTo * nearTo;
@@ -328,27 +326,32 @@ export function createBamboo(terrain, far) {
       for (let q = 0; q < across * across; q++) {
         const shown = shares[o + q], from = starts[q], to = starts[q + 1];
         if (!shown || from === to) continue;
-        let check = false;
-        if (!all) {
-          const x0 = slot.x + (q % across) * CLUMP - LEAN, z0 = slot.z + Math.floor(q / across) * CLUMP - LEAN;
-          const x1 = x0 + CLUMP + 2 * LEAN, z1 = z0 + CLUMP + 2 * LEAN;
-          if (outside(planes, x0, minY, z0, x1, maxY, z1)) continue;
-          check = !inside(planes, x0, minY, z0, x1, maxY, z1);
+        const x0 = slot.x + (q % across) * CLUMP - LEAN, z0 = slot.z + Math.floor(q / across) * CLUMP - LEAN;
+        let crossed = 0;
+        if (mask) {
+          crossed = crossing(planes, mask, x0, minY, z0, x0 + CLUMP + 2 * LEAN, maxY, z0 + CLUMP + 2 * LEAN);
+          if (crossed < 0) continue;
         }
-        if (!check && !near && bendRow < 0) {  // all of them, as they come (most of them)
+        // Near stalks only in a square reaching (a metre past) where they can be.
+        let nearHere = near;
+        if (near) {
+          const sx = Math.max(x0 + LEAN - camX, 0, camX - x0 - LEAN - CLUMP), sz = Math.max(z0 + LEAN - camZ, 0, camZ - z0 - LEAN - CLUMP);
+          nearHere = sx * sx + sz * sz < (nearTo + 1) * (nearTo + 1);
+        }
+        if (!crossed && !nearHere && bendRow < 0) {  // all of them, as they come (most of them)
           const second = shown << 24;
           for (let i = from; i < to; i++) { list[2 * n] = base + 2 * i; list[2 * n++ + 1] = second; }
           continue;
         }
         for (let i = from; i < to; i++) {
           const moved = bendRow >= 0 && isMoving[bendRow + i] === 1;
-          if (check && !moved) {  // a bent one could be anywhere near
+          if (crossed && !moved) {  // a bent one could be anywhere near
             const f = i * STALK_FLOATS, h = stalks[f + 3], r = stalkReach(h);
-            if (outside(planes, stalks[f] - r, stalks[f + 1], stalks[f + 2] - r, stalks[f] + r, stalks[f + 1] + h, stalks[f + 2] + r)) continue;
+            if (crossing(planes, crossed, stalks[f] - r, stalks[f + 1], stalks[f + 2] - r, stalks[f] + r, stalks[f + 1] + h, stalks[f + 2] + r) < 0) continue;
           }
           const bend = moved ? bent(bendRow + i) : 0;
           let left = shown;
-          if (near && nearCount < NEAR_ROOM) {  // each stalk its own distance, from where it stands (the same, whichever level)
+          if (nearHere && nearCount < NEAR_ROOM) {  // each stalk its own distance, from where it stands (the same, whichever level)
             const x = stalks[i * STALK_FLOATS], z = stalks[i * STALK_FLOATS + 2];
             const dx = x - camX, dz = z - camZ, r = (x * 0.6180339887 + z * 0.4142135624) % 1;
             const d = NEAR_FROM + (NEAR_BY - NEAR_FROM) * (r < 0 ? r + 1 : r);
@@ -385,7 +388,7 @@ export function createBamboo(terrain, far) {
       // What needs checking clump by clump: the mist's end, the view's sides.
       const farX = Math.max(Math.abs(x0 - camX), Math.abs(x0 + size - camX)), farZ = Math.max(Math.abs(z0 - camZ), Math.abs(z0 + size - camZ));
       const allNear = farX * farX + farZ * farZ < far * far;
-      const all = inside(planes, minX, minY, minZ, maxX, maxY, maxZ);
+      const mask = crossing(planes, 7, minX, minY, minZ, maxX, maxY, maxZ);
       const clumps = slot.clumps, squares = slot.clumpSquares, id = slot.index << 10;
       for (let i = 0; i < slot.clumpCount && n < capacity; i++) {
         const shown = shared ? 255 - shares[o + squares[i]] : 255;
@@ -396,7 +399,7 @@ export function createBamboo(terrain, far) {
           if (dx * dx + dz * dz > far * far) continue;
         }
         const y = clumps[f + 1];
-        if (!all && outside(planes, x - CLUMP_REACH, y, z - CLUMP_REACH, x + CLUMP_REACH, y + clumps[f + 3], z + CLUMP_REACH)) continue;
+        if (mask && crossing(planes, mask, x - CLUMP_REACH, y, z - CLUMP_REACH, x + CLUMP_REACH, y + clumps[f + 3], z + CLUMP_REACH) < 0) continue;
         list[2 * n] = id | i; list[2 * n++ + 1] = shown << 24;
       }
     }

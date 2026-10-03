@@ -280,11 +280,24 @@ export function broadleafLook(tree) {
   return tree.look;
 }
 
-// How far the point (x, y, z) is inside a tree's trunk: 0 if it isn't; if it is, the way out of it
-// (straight out from the trunk's middle) into `normal`. For the car's body (car.js), as bridgeWall.
-export function treeWall(trees, x, y, z, normal) {
-  let best = 0;
+// The trees within `reach` m of (x, z) (along x and along z), into `out` (from the start), in the
+// same order; returns how many. For treeWall: once a frame round the car, rather than every tree
+// found (hundreds) for every point of the car at every physics step (until 3 Oct 2026).
+export function treesNear(trees, x, z, reach, out) {
+  let count = 0;
   for (let k = 0; k < trees.length; k++) {
+    const t = trees[k];
+    if (Math.abs(t.x - x) < reach && Math.abs(t.z - z) < reach) out[count++] = t;
+  }
+  return count;
+}
+
+// How far the point (x, y, z) is inside a tree's trunk (the first `count` of `trees`): 0 if it isn't;
+// if it is, the way out of it (straight out from the trunk's middle) into `normal`. For the car's
+// body (car.js), as bridgeWall.
+export function treeWall(trees, x, y, z, normal, count = trees.length) {
+  let best = 0;
+  for (let k = 0; k < count; k++) {
     const t = trees[k], dx = x - t.x, dz = z - t.z;
     const look = t.kind === 'broadleaf' ? broadleafLook(t) : null;
     const radius = Math.max(WALL_RADIUS, look ? look.trunk * look.scale : TRUNK_RADIUS);

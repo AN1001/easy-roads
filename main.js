@@ -9,8 +9,8 @@ import { createParticles, updateParticles, kickUp, MAX_PARTICLES, PARTICLE_FLOAT
 import { createProfiler } from './profiler.js';
 import { BLOCK_FLOATS } from './blocks.js';
 import { bridgeBlocks, bridgeWall } from './bridges.js';
-import { treeModel, treeWall, loadBroadleaf, broadleafLook, BROADLEAF_FLOATS } from './trees.js';
-import { scatter, rockWall, KINDS, NATURE_FLOATS, INSTANCE_FLOATS } from './nature.js';
+import { treeModel, treeWall, treesNear, loadBroadleaf, broadleafLook, BROADLEAF_FLOATS } from './trees.js';
+import { scatter, rockWall, copiesNear, KINDS, NATURE_FLOATS, INSTANCE_FLOATS } from './nature.js';
 import { createSound } from './sound.js';
 import { createHint, createJoystick, touchScreen } from './ui.js';
 
@@ -23,12 +23,15 @@ import { createHint, createJoystick, touchScreen } from './ui.js';
 //     spawn=x,z,back facing the other way along it
 //   aa / nocull: turn antialiasing back on / chunk culling off, to measure what they cost
 //   nonature: no ground cover (nature.js: grass, ferns, bushes, rocks), to measure what it costs
+//   step=60: each frame moves the game on 1/60 s, however long it took: the same drive frame by
+//     frame, however slowly it's drawn (bench/headless.mjs, with a software renderer)
 const params = new URLSearchParams(location.search);
 const autodrive = params.has('autodrive');
 const followRoad = params.get('autodrive') === 'road';
 const fixedSize = params.get('size')?.split('x').map(Number);
 const cull = !params.has('nocull');
 const natureOn = !params.has('nonature');
+const fixedStep = params.has('step') ? 1000 / (Number(params.get('step')) || 60) : 0;  // ms
 
 const canvas = document.querySelector('canvas');
 // No antialiasing (multisampling): measured to roughly halve the GPU cost per pixel,
@@ -225,13 +228,21 @@ gl.bindBuffer(gl.ARRAY_BUFFER, broadleafBuffer);
 // each), refilled from what each drawn chunk scattered whenever the chunks drawn change (at most
 // every NATURE_REFRESH ms). One draw per kind for all its copies.
 const NATURE_REFRESH = 250;
-const NATURE_MARGIN = 15;  // m: chunks this much beyond where a kind fades out still give theirs (the camera moves on before the next gathering)
+// Copies this much beyond where their kind fades out are still gathered: the camera moves on (up to
+// NATURE_MOVE m) before the next gathering. (Every copy of every chunk some of which was within it
+// until 3 Oct 2026: ~3 times as many, each through the vertex shader. Ferns, fading out by 55 m:
+// those of chunks up to ~110 m off.)
+const NATURE_MARGIN = 15;  // m
 // Only those copies that may be in view are drawn (all round the camera, before: ~5 times as many):
 // as they're gathered, each kind's are sorted into buckets, the nearest (within NATURE_NEAR m) and
 // SECTORS sectors round the camera (natureView), and each run of buckets in view is a draw. Gathered
-// again too once the camera's NATURE_MOVE m from where they last were.
-const SECTORS = 16, NATURE_NEAR = 25, NATURE_MOVE = 12;
-let gatherX = 0, gatherZ = 0;
+// again too once the camera's NATURE_MOVE m from where they last were. The sectors are counted from
+// the way the camera looked then (gatherLook), and the nearest copies' bucket put between the two in
+// the middle, where it looks: so those in view are one run of buckets (one draw), not two or three
+// (the nearest, and the view's sectors split where the count began: until 3 Oct 2026), unless the
+// camera's turned a long way since.
+const SECTORS = 16, NATURE_NEAR = 25, NATURE_MOVE = 12, NEAR_BUCKET = SECTORS / 2;
+let gatherX = 0, gatherZ = 0, gatherLook = 0;
 const natureKinds = (() => {
   const vertexBuffer = gl.createBuffer(), indexBuffer = gl.createBuffer();
   let vertexCount = 0, indexCount = 0;
@@ -289,63 +300,82 @@ function copySeen(k, x, y, z) {
 const drawnIn = new Int32Array(terrain.slots.length).fill(-2), drawnVersion = new Int32Array(terrain.slots.length);
 const lateSlots = new Uint8Array(terrain.slots.length), gatheredVersion = new Int32Array(terrain.slots.length).fill(-1);
 let drawFrame = 0;
-// The boulders near, for rockWall: per boulder kind, its copies (as gathered).
+// The boulders near, for rockWall: per boulder kind, its copies (as gathered); and of those, the ones
+// near the car (see wallAt), found each frame.
 const boulders = natureKinds.filter(nk => nk.kind.wall).map(nk => ({ list: nk.list, count: 0, radius: nk.kind.wall, nk }));
+const nearBoulders = boulders.map(b => ({ list: new Float32Array(64 * INSTANCE_FLOATS), count: 0, radius: b.radius }));
 let natureDirty = true, natureAt = -Infinity, natureSignature = 0;
-// Gathers each kind's copies from the drawn chunks, into its buffer.
+// Gathers each kind's copies from the drawn chunks, into its buffer. (Nothing made each time: the
+// counts, buckets and lists are kept, and grown if need be.)
+const natureCounts = new Int32Array(KINDS.length), bucketAt = new Int32Array(SECTORS + 1);
+let bucketOf = new Uint8Array(4096);
+// `n` floats of `data` from `from` on, onto kind k's list.
+function pushCopies(k, data, from, n) {
+  const nk = natureKinds[k], at = natureCounts[k], need = at + n;
+  if (need > nk.list.length) { const bigger = new Float32Array(Math.max(need, 2 * nk.list.length)); bigger.set(nk.list.subarray(0, at)); nk.list = bigger; }
+  if (from === 0 && n === data.length) nk.list.set(data, at);
+  else for (let f = 0; f < n; f++) nk.list[at + f] = data[from + f];
+  natureCounts[k] = need;
+}
 function gatherNature() {
-  const counts = natureKinds.map(() => 0);
-  const push = (k, data, from, n) => {
-    const nk = natureKinds[k], need = counts[k] + n;
-    if (need > nk.list.length) { const bigger = new Float32Array(Math.max(need, 2 * nk.list.length)); bigger.set(nk.list.subarray(0, counts[k])); nk.list = bigger; }
-    nk.list.set(from === 0 && n === data.length ? data : data.subarray(from, from + n), counts[k]);
-    counts[k] = need;
-  };
-  // Only from chunks some of which is nearer than where the kind fades out; none held back.
+  natureCounts.fill(0);
+  gatherX = camera.x; gatherZ = camera.z; gatherLook = Math.atan2(-view[10], -view[2]);
+  // Only from chunks some of which is nearer than where the kind fades out (and NATURE_MARGIN), and
+  // of theirs, only those copies; none held back.
   for (let d = 0; d < terrain.drawCount; d++) {
-    const slot = terrain.slots[terrain.drawList[d]];
-    if (!slot.nature) continue;
-    const half = slot.size / 2, range = Math.hypot(slot.x + half - camera.x, slot.z + half - camera.z) - half * Math.SQRT2;
+    const slot = terrain.slots[terrain.drawList[d]], lists = slot.nature;
+    if (!lists) continue;
+    const half = slot.size / 2, middle = Math.hypot(slot.x + half - gatherX, slot.z + half - gatherZ);
+    const range = middle - half * Math.SQRT2, farthest = middle + half * Math.SQRT2;
     const first = gatheredVersion[slot.index] !== slot.version;  // this chunk's first gathering
     gatheredVersion[slot.index] = slot.version;
-    slot.nature.forEach((list, k) => {
-      if (!list || range >= KINDS[k].fade[1] + NATURE_MARGIN) return;
+    for (let k = 0; k < lists.length; k++) {
+      const list = lists[k], reach = KINDS[k].fade[1] + NATURE_MARGIN;
+      if (!list || range >= reach) continue;
       // Late, and a kind its parent hadn't: what of it can be seen is held back.
       if (first && lateSlots[slot.index] && KINDS[k].level === slot.level) {
         for (let o = 0; o < list.length; o += INSTANCE_FLOATS) {
           if (copySeen(k, list[o], list[o + 1], list[o + 2])) heldCopies.set(copyKey(k, list[o], list[o + 2]), [k, list[o], list[o + 1], list[o + 2]]);
         }
       }
-      if (!heldCopies.size) { push(k, list, 0, list.length); return; }
-      for (let o = 0; o < list.length; o += INSTANCE_FLOATS) if (!heldCopies.has(copyKey(k, list[o], list[o + 2]))) push(k, list, o, INSTANCE_FLOATS);
-    });
+      if (farthest < reach && !heldCopies.size) { pushCopies(k, list, 0, list.length); continue; }
+      for (let o = 0; o < list.length; o += INSTANCE_FLOATS) {
+        const dx = list[o] - gatherX, dz = list[o + 2] - gatherZ;
+        if (dx * dx + dz * dz >= reach * reach || (heldCopies.size && heldCopies.has(copyKey(k, list[o], list[o + 2])))) continue;
+        pushCopies(k, list, o, INSTANCE_FLOATS);
+      }
+    }
   }
-  // Each kind's copies sorted by bucket (counting them first, then each into its place): the
-  // nearest (bucket 0), then by the way they lie from here, sector by sector.
-  gatherX = camera.x; gatherZ = camera.z;
-  const bucketOf = new Uint8Array(4096);
-  natureKinds.forEach((nk, k) => {
-    const n = counts[k] / INSTANCE_FLOATS, list = nk.list, starts = nk.starts;
+  // Each kind's copies sorted by bucket (counting them first, then each into its place): by the way
+  // they lie from here, sector by sector, the nearest (NEAR_BUCKET) between the middle two.
+  for (let k = 0; k < natureKinds.length; k++) {
+    const nk = natureKinds[k], n = natureCounts[k] / INSTANCE_FLOATS, list = nk.list, starts = nk.starts;
     nk.copies = n;
-    if (nk.sorted.length < counts[k]) nk.sorted = new Float32Array(nk.list.length);
-    const buckets = n <= bucketOf.length ? bucketOf : new Uint8Array(n);
+    if (nk.sorted.length < natureCounts[k]) nk.sorted = new Float32Array(nk.list.length);
+    if (bucketOf.length < n) bucketOf = new Uint8Array(2 * n);
     starts.fill(0);
     for (let c = 0; c < n; c++) {
       const dx = list[c * INSTANCE_FLOATS] - gatherX, dz = list[c * INSTANCE_FLOATS + 2] - gatherZ;
-      const b = dx * dx + dz * dz < NATURE_NEAR * NATURE_NEAR ? 0 : 1 + Math.min(SECTORS - 1, Math.floor((Math.atan2(dz, dx) + Math.PI) / (2 * Math.PI) * SECTORS));
-      buckets[c] = b;
+      let b = NEAR_BUCKET;
+      if (dx * dx + dz * dz >= NATURE_NEAR * NATURE_NEAR) {
+        const turn = Math.atan2(dz, dx) - gatherLook + Math.PI;  // from straight behind, -π to 3π
+        const sector = Math.min(SECTORS - 1, Math.floor((turn - 2 * Math.PI * Math.floor(turn / (2 * Math.PI))) / (2 * Math.PI) * SECTORS));
+        b = sector < NEAR_BUCKET ? sector : sector + 1;
+      }
+      bucketOf[c] = b;
       starts[b + 1]++;
     }
     for (let b = 1; b <= SECTORS + 1; b++) starts[b] += starts[b - 1];
-    const at = starts.slice(0, SECTORS + 1);
+    for (let b = 0; b <= SECTORS; b++) bucketAt[b] = starts[b];
     const sorted = nk.sorted;
     for (let c = 0; c < n; c++) {
-      const to = at[buckets[c]]++ * INSTANCE_FLOATS, from = c * INSTANCE_FLOATS;
+      const to = bucketAt[bucketOf[c]]++ * INSTANCE_FLOATS, from = c * INSTANCE_FLOATS;
       for (let f = 0; f < INSTANCE_FLOATS; f++) sorted[to + f] = list[from + f];
     }
+    if (!n) continue;
     gl.bindBuffer(gl.ARRAY_BUFFER, nk.instances);
-    gl.bufferData(gl.ARRAY_BUFFER, nk.sorted.subarray(0, counts[k]), gl.DYNAMIC_DRAW);  // new storage
-  });
+    gl.bufferData(gl.ARRAY_BUFFER, sorted, gl.DYNAMIC_DRAW, 0, natureCounts[k]);  // new storage
+  }
   for (const b of boulders) { b.list = b.nk.list; b.count = natureOn ? b.nk.copies * INSTANCE_FLOATS : 0; }
 }
 
@@ -378,9 +408,9 @@ function natureView() {
   natureRunCount = 0;
   let open = -1;
   for (let b = 0; b <= SECTORS; b++) {
-    let seen = b === 0;
+    let seen = b === NEAR_BUCKET;
     if (!seen) {
-      const middle = (b - 0.5) / SECTORS * 2 * Math.PI - Math.PI;
+      const sector = b < NEAR_BUCKET ? b : b - 1, middle = gatherLook + (sector + 0.5) / SECTORS * 2 * Math.PI - Math.PI;
       const off = Math.abs(((middle - look) % (2 * Math.PI) + 3 * Math.PI) % (2 * Math.PI) - Math.PI);
       seen = off <= reach;
     }
@@ -736,15 +766,19 @@ function drawList(uniforms, model, from, to) {
 }
 
 // What the car's body bumps against: the bridges' railings, the trees' trunks and the boulders,
-// the deepest.
-const treeNormal = new Float64Array(3);
+// the deepest. Only the trees and boulders within WALL_REACH m of the car, found once a frame
+// (nearTrees, nearBoulders): the car's points are at most ~2.5 m from it, a trunk or boulder at most
+// 1.3 m round, and in a frame (0.1 s at most) the car goes no more than ~3.5 m. (Every tree found,
+// for every point of the car, at every physics step, until 3 Oct 2026: ~0.05 ms a frame in Node.)
+const WALL_REACH = 10;  // m
+const treeNormal = new Float64Array(3), nearTrees = [];
+let nearTreeCount = 0;
 const wallAt = (x, y, z, normal) => {
   let deepest = bridgeWall(terrain.bridges, x, y, z, normal);
-  for (const depth of [treeWall(terrain.trees, x, y, z, treeNormal), rockWall(boulders, x, y, z, treeNormal)]) {
-    if (depth <= deepest) continue;
-    deepest = depth;
-    normal[0] = treeNormal[0]; normal[1] = treeNormal[1]; normal[2] = treeNormal[2];
-  }
+  const tree = treeWall(nearTrees, x, y, z, treeNormal, nearTreeCount);
+  if (tree > deepest) { deepest = tree; normal[0] = treeNormal[0]; normal[1] = treeNormal[1]; normal[2] = treeNormal[2]; }
+  const rock = rockWall(nearBoulders, x, y, z, treeNormal);
+  if (rock > deepest) { deepest = rock; normal[0] = treeNormal[0]; normal[1] = treeNormal[1]; normal[2] = treeNormal[2]; }
   return deepest;
 };
 
@@ -757,10 +791,11 @@ const ground = {
 
 // --- Game loop: the browser calls this before every screen refresh ---
 
-let lastTime = -1;
+let lastTime = -1, steps = 0;
 
-function frame(timeMs) {
-  profiler?.frameStart(timeMs);
+function frame(realMs) {
+  profiler?.frameStart(realMs);
+  const timeMs = fixedStep ? steps++ * fixedStep : realMs;
 
   // Seconds since last frame, capped so a paused tab doesn't launch the car on return.
   const first = lastTime < 0;
@@ -782,6 +817,13 @@ function frame(timeMs) {
     steer = Math.abs(stick.x) > 0.1 ? -stick.x : 0;  // as far as it's pushed (left is +)
   }
   const handbrake = held.has('Space') ? 1 : 0;
+  if (nearTrees.length < terrain.trees.length) nearTrees.length = terrain.trees.length;
+  nearTreeCount = treesNear(terrain.trees, car.x, car.z, WALL_REACH, nearTrees);
+  for (let k = 0; k < boulders.length; k++) {
+    const b = boulders[k], near = nearBoulders[k];
+    if (near.list.length < b.count) near.list = new Float32Array(b.count);
+    near.count = copiesNear(b.list, b.count, car.x, car.z, WALL_REACH, near.list);
+  }
   updateCar(car, throttle, brake, handbrake, steer, dt, terrain.groundAt, wallAt, terrain.waterAt);
   const m = car.model;  // columns: side (0-2), up (4-6), forward (8-10), position (12-14)
   for (let k = 0; k < 3; k++) {
