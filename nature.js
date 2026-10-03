@@ -384,6 +384,19 @@ export function scatter(slot) {
   return lists.map(list => list && new Float32Array(list));
 }
 
+// The copies (INSTANCE_FLOATS each, `count` floats of `list`) within `reach` m of (x, z) (along x and
+// along z), into `out` (from the start), in the same order; returns how many floats. For rockWall,
+// as treesNear for treeWall.
+export function copiesNear(list, count, x, z, reach, out) {
+  let n = 0;
+  for (let o = 0; o < count; o += INSTANCE_FLOATS) {
+    if (Math.abs(list[o] - x) >= reach || Math.abs(list[o + 2] - z) >= reach) continue;
+    for (let f = 0; f < INSTANCE_FLOATS; f++) out[n + f] = list[o + f];
+    n += INSTANCE_FLOATS;
+  }
+  return n;
+}
+
 // How far the point (x, y, z) is inside a boulder (those in `copies`: per boulder kind, its list
 // of copies, INSTANCE_FLOATS each): 0 if it isn't; if it is, the way out (straight out from its
 // middle) into `normal`. For the car's body (car.js), as treeWall.

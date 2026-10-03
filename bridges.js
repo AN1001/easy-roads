@@ -19,7 +19,7 @@ const JOINT = 0.3;     // m: how far each piece's deck and railings run on past 
 const PIER_BELOW = 4;  // m below the water at the river's middle: the piles go this deep
 const BRIDGE_SINK_BELOW = 0.3;  // m: the end posts reach this far below the deck (into the ground, where it sinks: terrain.js)
 
-// Lays the blocks for all of `bridges` into `out` (blocks.js).
+// Lays the blocks for all of `bridges` into `out` (blocks.js's blockWriter).
 export function bridgeBlocks(bridges, out) {
   for (const b of bridges) {
     const c = b.corners, pieces = c.length / 3 - 1, half = b.half, total = runLength(c);

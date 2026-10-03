@@ -7,10 +7,10 @@ import { createTextures, createPuddles, puddleAt, TEXTURE_SIZE, TEXTURE_LAYERS, 
 import { createBambooModel, createBamboo, LIST_WIDTH, LIST_ROWS, STALK_WIDTH } from './bamboo.js';
 import { createParticles, updateParticles, kickUp, MAX_PARTICLES, PARTICLE_FLOATS } from './particles.js';
 import { createProfiler } from './profiler.js';
-import { BLOCK_FLOATS } from './blocks.js';
+import { BLOCK_FLOATS, blockWriter } from './blocks.js';
 import { bridgeBlocks, bridgeWall } from './bridges.js';
-import { treeModel, treeWall, loadBroadleaf, broadleafLook, BROADLEAF_FLOATS } from './trees.js';
-import { scatter, rockWall, KINDS, NATURE_FLOATS, INSTANCE_FLOATS } from './nature.js';
+import { treeModel, treeWall, treesNear, loadBroadleaf, broadleafLook, BROADLEAF_FLOATS } from './trees.js';
+import { scatter, rockWall, copiesNear, KINDS, NATURE_FLOATS, INSTANCE_FLOATS } from './nature.js';
 import { createSound } from './sound.js';
 import { createHint, createJoystick, touchScreen } from './ui.js';
 
@@ -23,12 +23,15 @@ import { createHint, createJoystick, touchScreen } from './ui.js';
 //     spawn=x,z,back facing the other way along it
 //   aa / nocull: turn antialiasing back on / chunk culling off, to measure what they cost
 //   nonature: no ground cover (nature.js: grass, ferns, bushes, rocks), to measure what it costs
+//   step=60: each frame moves the game on 1/60 s, however long it took: the same drive frame by
+//     frame, however slowly it's drawn (bench/headless.mjs, with a software renderer)
 const params = new URLSearchParams(location.search);
 const autodrive = params.has('autodrive');
 const followRoad = params.get('autodrive') === 'road';
 const fixedSize = params.get('size')?.split('x').map(Number);
 const cull = !params.has('nocull');
 const natureOn = !params.has('nonature');
+const fixedStep = params.has('step') ? 1000 / (Number(params.get('step')) || 60) : 0;  // ms
 
 const canvas = document.querySelector('canvas');
 // No antialiasing (multisampling): measured to roughly halve the GPU cost per pixel,
@@ -90,7 +93,13 @@ const DETAIL = [100, 220];  // m
 const AHEAD = 40;           // m
 const BUILD_BUDGET = 1;     // ms
 const SEEN = FOG_START - FOG_THICKNESS * Math.log(1 - 0.96 * (1 - Math.exp(-(FOG_END - FOG_START) / FOG_THICKNESS)));  // m
-const terrain = createTerrain({ draw: FOG_END, ahead: AHEAD, detail: DETAIL });
+// Built in a worker (terrain-worker.js), off the main thread, where one starts (a module worker);
+// terrain.js still builds here, at once, what's needed at once: a hole in view, the ground under the
+// car. (All of it here, within BUILD_BUDGET a frame, until 3 Oct 2026: ~0.25 ms a frame in Node,
+// driving the road, more catching up.)
+let builder = null;
+try { builder = new Worker(new URL('terrain-worker.js', import.meta.url), { type: 'module' }); } catch {}
+const terrain = createTerrain({ draw: FOG_END, ahead: AHEAD, detail: DETAIL, worker: builder });
 // By default, the lane nearest (600, -330), near the middle of the world. Copied, since the next
 // call to nearestRoad reuses the object it answers with.
 const [spawnX, spawnZ, spawnBack] = params.get('spawn')?.split(',') ?? [600, -330];
@@ -108,25 +117,16 @@ const chunkIndexBuffer = gl.createBuffer();
 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, chunkIndexBuffer);
 gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, terrain.indices, gl.STATIC_DRAW);
 
-// One vertex buffer and VAO per chunk slot, made once and refilled as the slot takes on new
-// chunks: no GPU objects are created or deleted while driving. 8 bytes per vertex (see
-// terrain.js): 4-byte aligned, which Metal requires, so the browser can hand the buffer over as-is.
-const chunkBuffers = [];
-const chunkVaos = terrain.slots.map(slot => {
-  const vao = gl.createVertexArray();
-  gl.bindVertexArray(vao);
-  const buffer = gl.createBuffer();
-  chunkBuffers.push(buffer);
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-  gl.bufferData(gl.ARRAY_BUFFER, slot.vertices.byteLength, gl.DYNAMIC_DRAW);
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, chunkIndexBuffer);
-  const stride = VERTEX_SHORTS * 2;
-  gl.enableVertexAttribArray(0);
-  gl.vertexAttribIPointer(0, 2, gl.SHORT, stride, 0);        // height, road edge: stay integers
-  gl.enableVertexAttribArray(1);
-  gl.vertexAttribPointer(1, 4, gl.BYTE, true, stride, 4);    // normal and grove: -127..127 becomes -1..1
-  return vao;
-});
+// All the chunks drawn in one draw, a copy (instance) each: each chunk slot's vertices are a row of
+// one integer texture (terrain.vert reads them by gl_VertexID; refilled as the slot takes on new
+// chunks, through a pixel buffer, as the bamboo's are), and per copy, from a small buffer refilled
+// each frame (one for each turn), where the chunk is, how far apart its vertices, and its slot's row.
+// (Until 3 Oct 2026, a vertex buffer and VAO per slot, and per chunk drawn its own draw: ~41 draws and
+// ~120 calls a frame, each with its cost in the browser and the driver.) A vertex is a texel of 4
+// 16-bit numbers: height, road edge, and the normal and grove as bytes (terrain.js).
+const CHUNK_VERTICES = terrain.slots[0].vertices.length / VERTEX_SHORTS;  // with the skirts': 1,085
+const chunkCopies = new Float32Array(4 * terrain.slots.length);
+const chunkCopyBuffers = [], chunkVaos = [];
 const uploadedVersion = new Int32Array(terrain.slots.length);  // 0: nothing uploaded yet
 
 // The rivers' water (water.vert): per slot, its own buffer and VAO, 4 bytes a vertex (the water's
@@ -171,15 +171,16 @@ const wheelIndexCount = carMeshes.wheel.indices.length;
 // whenever terrain.js finds a different set, every few hundred metres at most. Per vertex:
 // position, normal, texture coordinate, colour and texture layer.
 // The cherry trees (trees.js) the same way, but each in a buffer of its own, from a pool of
-// TREE_SLOTS made at the start: a tree found gets a free one, filled once with its model (~9,000
-// vertices, ~0.44 MB), kept while it's near. (All of them in one buffer, refilled whenever one came
-// or went, was ~11 MB each time.)
+// TREE_SLOTS made at the start: a tree found gets a free one, filled once with its model (~4,000
+// vertices, ~0.2 MB), kept while it's near. (All of them in one buffer, refilled whenever one came
+// or went, was ~11 MB each time.) Both drawn with indices (blocks.js's shareVertices, trees.js), each
+// slot and the bridges' with an index buffer of their own, in their VAO.
 const TREE_SLOTS = 48;
 // From TREE_LOD m, a tree's far model (trees.js). Each is culled by a box TREE_BOX m either side of
 // its trunk, up to TREE_HEIGHT m above its foot.
 // Its near model's made once it's within TREE_DETAIL m.
 const TREE_LOD = 90, TREE_DETAIL = 115, TREE_BOX = 9, TREE_HEIGHT = 14;
-const treesDrawn = [], byRange = (a, b) => a.range - b.range;
+const treesDrawn = [];
 let treesWaiting = [], broadleafTrees = [];
 function createBuiltVao() {
   const vao = gl.createVertexArray();
@@ -190,48 +191,106 @@ function createBuiltVao() {
     gl.enableVertexAttribArray(k);
     gl.vertexAttribPointer(k, size, gl.FLOAT, false, BLOCK_FLOATS * 4, 4 * at);
   });
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
   gl.bindVertexArray(null);
-  return [vao, buffer];
+  return { vao, buffer, indices: 0, type: gl.UNSIGNED_SHORT, size: 2 };
 }
-const [builtVao, builtBuffer] = createBuiltVao();
-const treeSlots = Array.from({ length: TREE_SLOTS }, () => { const [vao, buffer] = createBuiltVao(); return { vao, buffer, tree: null, vertices: 0, held: false }; });
-// A tree's model into its slot: `detailed`, its near one too; `held`, not drawn yet (see below).
-function makeTree(slot, tree, detailed, held) {
-  const model = treeModel(tree, detailed);
-  gl.bindBuffer(gl.ARRAY_BUFFER, slot.buffer);
-  gl.bufferData(gl.ARRAY_BUFFER, model.data, gl.STATIC_DRAW);  // new storage: the last model may still be drawn from
-  slot.tree = tree;
-  slot.near = model.near;
-  slot.vertices = model.data.length / BLOCK_FLOATS;
-  slot.held = held;
+// Vertices and indices (the first `floats` and `count` of them) into a built VAO, each new storage:
+// the last may still be drawn from.
+function fillBuilt(built, vertices, indices, floats = vertices.length, count = indices.length) {
+  built.indices = count;
+  if (!count) return;
+  gl.bindVertexArray(built.vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, built.buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW, 0, floats);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW, 0, count);  // (the VAO's own)
+  gl.bindVertexArray(null);
+  built.size = indices.BYTES_PER_ELEMENT;
+  built.type = built.size === 2 ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT;
 }
+const bridgeBuilt = createBuiltVao(), bridgeWriter = blockWriter();
+// Per slot: its tree, its model's indices (0: none yet) and its near model's (0: only the far one),
+// whether it's held back (see below), whether it's new (not drawn yet: whether to hold it back is
+// worked out the first time it could be), and whether a model's been asked for (see treeWorker).
+const treeSlots = Array.from({ length: TREE_SLOTS }, () => Object.assign(createBuiltVao(), { tree: null, near: 0, held: false, fresh: false, asked: false, range: 0 }));
+// A tree's model into its slot: `detailed`, its near one too.
+function placeTree(slot, model) {
+  fillBuilt(slot, model.vertices, model.indices);
+  slot.near = model.near;  // indices
+}
+function makeTree(slot, tree, detailed) {
+  if (slot.tree !== tree) { slot.tree = tree; slot.fresh = true; slot.held = false; }
+  placeTree(slot, treeModel(tree, detailed));
+}
+// The models are made in a worker (tree-worker.js), one asked for at a time, where one starts: ~1 ms
+// each (Node), one a frame at most made here until 3 Oct 2026. Here still after a jump (all those
+// within SEEN at once: see below), or where the worker can't start.
+let treeWorker = null, treeAsked = null, treeAsks = 0;  // the ask in flight: { id, slot, tree }
+try { treeWorker = new Worker(new URL('tree-worker.js', import.meta.url), { type: 'module' }); } catch {}
+if (treeWorker) {
+  treeWorker.onmessage = ({ data }) => {
+    const ask = treeAsked;
+    if (!ask || ask.id !== data.id) return;
+    treeAsked = null;
+    ask.slot.asked = false;
+    if (ask.slot.tree === ask.tree) placeTree(ask.slot, data);  // (not if its slot's been freed since)
+  };
+  treeWorker.onerror = () => {  // made here from now on; one asked for and lost goes back to waiting
+    treeWorker = null;
+    if (treeAsked) { treeAsked.slot.asked = false; if (!treeAsked.slot.indices) treeAsked.slot.tree = null; treeAsked = null; treesVersion = -1; }
+  };
+}
+function askTree(slot, tree, detailed) {
+  if (slot.tree !== tree) { slot.tree = tree; slot.fresh = true; slot.held = false; slot.indices = 0; slot.near = 0; }
+  slot.asked = true;
+  treeAsked = { id: ++treeAsks, slot, tree };
+  treeWorker.postMessage({ id: treeAsks, tree: { x: tree.x, y: tree.y, z: tree.z, kind: tree.kind, seed: tree.seed,
+    ground: tree.ground, groundStep: tree.groundStep, groundSize: tree.groundSize }, detailed });
+}
+const freeTreeSlot = () => { for (const slot of treeSlots) if (!slot.tree) return slot; return null; };
 const treeInView = tree => boxInFrustum(planes, tree.x - TREE_BOX, tree.y - 1, tree.z - TREE_BOX, tree.x + TREE_BOX, tree.y + TREE_HEIGHT, tree.z + TREE_BOX);
-let builtVersion = -1, builtVertices = 0, treesVersion = -1;
+let builtVersion = -1, treesVersion = -1;
 
 // The broadleaf trees (trees.js, tree.vert): their three shapes in one buffer, uploaded once; per
 // shape, a VAO reading it, and a buffer of the trees of that shape (where each stands, how it's
 // turned, its size: 5 floats), refilled whenever terrain.js finds a different set of trees, each
 // drawn with one call for all of them.
-const broadleafBuffer = gl.createBuffer();
+// Their indices in one buffer too, each shape's counted from its own first vertex.
+const broadleafBuffer = gl.createBuffer(), broadleafIndices = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, broadleafBuffer);
 {
   const all = new Float32Array(broadleafShapes.reduce((n, shape) => n + shape.vertices.length, 0));
-  let at = 0;
-  for (const shape of broadleafShapes) { shape.first = at / BROADLEAF_FLOATS; all.set(shape.vertices, at); at += shape.vertices.length; }
+  const indices = new Uint16Array(broadleafShapes.reduce((n, shape) => n + shape.indices.length, 0));
+  let at = 0, i = 0;
+  for (const shape of broadleafShapes) {
+    shape.first = at / BROADLEAF_FLOATS; all.set(shape.vertices, at); at += shape.vertices.length;
+    shape.firstIndex = i; indices.set(shape.indices, i); i += shape.indices.length;
+  }
   gl.bufferData(gl.ARRAY_BUFFER, all, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, broadleafIndices);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
 }
 // The ground cover (nature.js): every kind's model in one vertex buffer and one index buffer,
 // uploaded once; per kind, a VAO reading its model, and a buffer of its copies (INSTANCE_FLOATS
 // each), refilled from what each drawn chunk scattered whenever the chunks drawn change (at most
 // every NATURE_REFRESH ms). One draw per kind for all its copies.
 const NATURE_REFRESH = 250;
-const NATURE_MARGIN = 15;  // m: chunks this much beyond where a kind fades out still give theirs (the camera moves on before the next gathering)
+// Copies this much beyond where their kind fades out are still gathered: the camera moves on (up to
+// NATURE_MOVE m) before the next gathering. (Every copy of every chunk some of which was within it
+// until 3 Oct 2026: ~3 times as many, each through the vertex shader. Ferns, fading out by 55 m:
+// those of chunks up to ~110 m off.)
+const NATURE_MARGIN = 15;  // m
 // Only those copies that may be in view are drawn (all round the camera, before: ~5 times as many):
 // as they're gathered, each kind's are sorted into buckets, the nearest (within NATURE_NEAR m) and
 // SECTORS sectors round the camera (natureView), and each run of buckets in view is a draw. Gathered
-// again too once the camera's NATURE_MOVE m from where they last were.
-const SECTORS = 16, NATURE_NEAR = 25, NATURE_MOVE = 12;
-let gatherX = 0, gatherZ = 0;
+// again too once the camera's NATURE_MOVE m from where they last were. The sectors are counted from
+// the way the camera looked then (gatherLook), and the nearest copies' bucket put between the two in
+// the middle, where it looks: so those in view are one run of buckets (one draw), not two or three
+// (the nearest, and the view's sectors split where the count began: until 3 Oct 2026), unless the
+// camera's turned a long way since.
+const SECTORS = 16, NATURE_NEAR = 25, NATURE_MOVE = 12, NEAR_BUCKET = SECTORS / 2;
+let gatherX = 0, gatherZ = 0, gatherLook = 0;
 const natureKinds = (() => {
   const vertexBuffer = gl.createBuffer(), indexBuffer = gl.createBuffer();
   let vertexCount = 0, indexCount = 0;
@@ -266,7 +325,7 @@ const natureKinds = (() => {
     });
     gl.bindVertexArray(null);
     return { kind, vao, instances, indices: p.count, firstIndex: p.firstIndex, copies: 0, list: new Float32Array(1024),
-      sorted: new Float32Array(1024), starts: new Int32Array(SECTORS + 2) };
+      sorted: new Float32Array(1024), starts: new Int32Array(SECTORS + 2), pointed: 0 };
   });
 })();
 // Ground cover that comes late, its chunk drawn in place of a coarser one that hadn't it only once
@@ -289,63 +348,82 @@ function copySeen(k, x, y, z) {
 const drawnIn = new Int32Array(terrain.slots.length).fill(-2), drawnVersion = new Int32Array(terrain.slots.length);
 const lateSlots = new Uint8Array(terrain.slots.length), gatheredVersion = new Int32Array(terrain.slots.length).fill(-1);
 let drawFrame = 0;
-// The boulders near, for rockWall: per boulder kind, its copies (as gathered).
+// The boulders near, for rockWall: per boulder kind, its copies (as gathered); and of those, the ones
+// near the car (see wallAt), found each frame.
 const boulders = natureKinds.filter(nk => nk.kind.wall).map(nk => ({ list: nk.list, count: 0, radius: nk.kind.wall, nk }));
+const nearBoulders = boulders.map(b => ({ list: new Float32Array(64 * INSTANCE_FLOATS), count: 0, radius: b.radius }));
 let natureDirty = true, natureAt = -Infinity, natureSignature = 0;
-// Gathers each kind's copies from the drawn chunks, into its buffer.
+// Gathers each kind's copies from the drawn chunks, into its buffer. (Nothing made each time: the
+// counts, buckets and lists are kept, and grown if need be.)
+const natureCounts = new Int32Array(KINDS.length), bucketAt = new Int32Array(SECTORS + 1);
+let bucketOf = new Uint8Array(4096);
+// `n` floats of `data` from `from` on, onto kind k's list.
+function pushCopies(k, data, from, n) {
+  const nk = natureKinds[k], at = natureCounts[k], need = at + n;
+  if (need > nk.list.length) { const bigger = new Float32Array(Math.max(need, 2 * nk.list.length)); bigger.set(nk.list.subarray(0, at)); nk.list = bigger; }
+  if (from === 0 && n === data.length) nk.list.set(data, at);
+  else for (let f = 0; f < n; f++) nk.list[at + f] = data[from + f];
+  natureCounts[k] = need;
+}
 function gatherNature() {
-  const counts = natureKinds.map(() => 0);
-  const push = (k, data, from, n) => {
-    const nk = natureKinds[k], need = counts[k] + n;
-    if (need > nk.list.length) { const bigger = new Float32Array(Math.max(need, 2 * nk.list.length)); bigger.set(nk.list.subarray(0, counts[k])); nk.list = bigger; }
-    nk.list.set(from === 0 && n === data.length ? data : data.subarray(from, from + n), counts[k]);
-    counts[k] = need;
-  };
-  // Only from chunks some of which is nearer than where the kind fades out; none held back.
+  natureCounts.fill(0);
+  gatherX = camera.x; gatherZ = camera.z; gatherLook = Math.atan2(-view[10], -view[2]);
+  // Only from chunks some of which is nearer than where the kind fades out (and NATURE_MARGIN), and
+  // of theirs, only those copies; none held back.
   for (let d = 0; d < terrain.drawCount; d++) {
-    const slot = terrain.slots[terrain.drawList[d]];
-    if (!slot.nature) continue;
-    const half = slot.size / 2, range = Math.hypot(slot.x + half - camera.x, slot.z + half - camera.z) - half * Math.SQRT2;
+    const slot = terrain.slots[terrain.drawList[d]], lists = slot.nature;
+    if (!lists) continue;
+    const half = slot.size / 2, middle = Math.hypot(slot.x + half - gatherX, slot.z + half - gatherZ);
+    const range = middle - half * Math.SQRT2, farthest = middle + half * Math.SQRT2;
     const first = gatheredVersion[slot.index] !== slot.version;  // this chunk's first gathering
     gatheredVersion[slot.index] = slot.version;
-    slot.nature.forEach((list, k) => {
-      if (!list || range >= KINDS[k].fade[1] + NATURE_MARGIN) return;
+    for (let k = 0; k < lists.length; k++) {
+      const list = lists[k], reach = KINDS[k].fade[1] + NATURE_MARGIN;
+      if (!list || range >= reach) continue;
       // Late, and a kind its parent hadn't: what of it can be seen is held back.
       if (first && lateSlots[slot.index] && KINDS[k].level === slot.level) {
         for (let o = 0; o < list.length; o += INSTANCE_FLOATS) {
           if (copySeen(k, list[o], list[o + 1], list[o + 2])) heldCopies.set(copyKey(k, list[o], list[o + 2]), [k, list[o], list[o + 1], list[o + 2]]);
         }
       }
-      if (!heldCopies.size) { push(k, list, 0, list.length); return; }
-      for (let o = 0; o < list.length; o += INSTANCE_FLOATS) if (!heldCopies.has(copyKey(k, list[o], list[o + 2]))) push(k, list, o, INSTANCE_FLOATS);
-    });
+      if (farthest < reach && !heldCopies.size) { pushCopies(k, list, 0, list.length); continue; }
+      for (let o = 0; o < list.length; o += INSTANCE_FLOATS) {
+        const dx = list[o] - gatherX, dz = list[o + 2] - gatherZ;
+        if (dx * dx + dz * dz >= reach * reach || (heldCopies.size && heldCopies.has(copyKey(k, list[o], list[o + 2])))) continue;
+        pushCopies(k, list, o, INSTANCE_FLOATS);
+      }
+    }
   }
-  // Each kind's copies sorted by bucket (counting them first, then each into its place): the
-  // nearest (bucket 0), then by the way they lie from here, sector by sector.
-  gatherX = camera.x; gatherZ = camera.z;
-  const bucketOf = new Uint8Array(4096);
-  natureKinds.forEach((nk, k) => {
-    const n = counts[k] / INSTANCE_FLOATS, list = nk.list, starts = nk.starts;
+  // Each kind's copies sorted by bucket (counting them first, then each into its place): by the way
+  // they lie from here, sector by sector, the nearest (NEAR_BUCKET) between the middle two.
+  for (let k = 0; k < natureKinds.length; k++) {
+    const nk = natureKinds[k], n = natureCounts[k] / INSTANCE_FLOATS, list = nk.list, starts = nk.starts;
     nk.copies = n;
-    if (nk.sorted.length < counts[k]) nk.sorted = new Float32Array(nk.list.length);
-    const buckets = n <= bucketOf.length ? bucketOf : new Uint8Array(n);
+    if (nk.sorted.length < natureCounts[k]) nk.sorted = new Float32Array(nk.list.length);
+    if (bucketOf.length < n) bucketOf = new Uint8Array(2 * n);
     starts.fill(0);
     for (let c = 0; c < n; c++) {
       const dx = list[c * INSTANCE_FLOATS] - gatherX, dz = list[c * INSTANCE_FLOATS + 2] - gatherZ;
-      const b = dx * dx + dz * dz < NATURE_NEAR * NATURE_NEAR ? 0 : 1 + Math.min(SECTORS - 1, Math.floor((Math.atan2(dz, dx) + Math.PI) / (2 * Math.PI) * SECTORS));
-      buckets[c] = b;
+      let b = NEAR_BUCKET;
+      if (dx * dx + dz * dz >= NATURE_NEAR * NATURE_NEAR) {
+        const turn = Math.atan2(dz, dx) - gatherLook + Math.PI;  // from straight behind, -π to 3π
+        const sector = Math.min(SECTORS - 1, Math.floor((turn - 2 * Math.PI * Math.floor(turn / (2 * Math.PI))) / (2 * Math.PI) * SECTORS));
+        b = sector < NEAR_BUCKET ? sector : sector + 1;
+      }
+      bucketOf[c] = b;
       starts[b + 1]++;
     }
     for (let b = 1; b <= SECTORS + 1; b++) starts[b] += starts[b - 1];
-    const at = starts.slice(0, SECTORS + 1);
+    for (let b = 0; b <= SECTORS; b++) bucketAt[b] = starts[b];
     const sorted = nk.sorted;
     for (let c = 0; c < n; c++) {
-      const to = at[buckets[c]]++ * INSTANCE_FLOATS, from = c * INSTANCE_FLOATS;
+      const to = bucketAt[bucketOf[c]]++ * INSTANCE_FLOATS, from = c * INSTANCE_FLOATS;
       for (let f = 0; f < INSTANCE_FLOATS; f++) sorted[to + f] = list[from + f];
     }
+    if (!n) continue;
     gl.bindBuffer(gl.ARRAY_BUFFER, nk.instances);
-    gl.bufferData(gl.ARRAY_BUFFER, nk.sorted.subarray(0, counts[k]), gl.DYNAMIC_DRAW);  // new storage
-  });
+    gl.bufferData(gl.ARRAY_BUFFER, sorted, gl.DYNAMIC_DRAW, 0, natureCounts[k]);  // new storage
+  }
   for (const b of boulders) { b.list = b.nk.list; b.count = natureOn ? b.nk.copies * INSTANCE_FLOATS : 0; }
 }
 
@@ -378,9 +456,9 @@ function natureView() {
   natureRunCount = 0;
   let open = -1;
   for (let b = 0; b <= SECTORS; b++) {
-    let seen = b === 0;
+    let seen = b === NEAR_BUCKET;
     if (!seen) {
-      const middle = (b - 0.5) / SECTORS * 2 * Math.PI - Math.PI;
+      const sector = b < NEAR_BUCKET ? b : b - 1, middle = gatherLook + (sector + 0.5) / SECTORS * 2 * Math.PI - Math.PI;
       const off = Math.abs(((middle - look) % (2 * Math.PI) + 3 * Math.PI) % (2 * Math.PI) - Math.PI);
       seen = off <= reach;
     }
@@ -398,6 +476,7 @@ const broadleaf = broadleafShapes.map(shape => {
     gl.enableVertexAttribArray(k);
     gl.vertexAttribPointer(k, size, gl.FLOAT, false, BROADLEAF_FLOATS * 4, 4 * (shape.first * BROADLEAF_FLOATS + at));
   });
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, broadleafIndices);
   const instances = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, instances);
   [[4, 4, 0], [5, 1, 4]].forEach(([k, size, at]) => {
@@ -406,7 +485,7 @@ const broadleaf = broadleafShapes.map(shape => {
     gl.vertexAttribDivisor(k, 1);
   });
   gl.bindVertexArray(null);
-  return { vao, instances, vertices: shape.count, count: 0, list: new Float32Array(0) };
+  return { vao, instances, indices: shape.indices.length, firstIndex: shape.firstIndex, count: 0, list: new Float32Array(0) };
 });
 
 // Bamboo (bamboo.js): no vertex buffers, just a list of indices for the models, which the shaders
@@ -429,9 +508,9 @@ function dataTexture(unit, format, width, height) {
   gl.texStorage2D(gl.TEXTURE_2D, 1, format, width, height);
   // Filled with zeros once: Firefox otherwise clears a texture itself before the first upload to
   // part of it, slowly, warning each time (1 Oct 2026).
-  const float = format === gl.RGBA32F;
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, float ? gl.RGBA : gl.RG_INTEGER, float ? gl.FLOAT : gl.UNSIGNED_INT,
-    float ? new Float32Array(width * height * 4) : new Uint32Array(width * height * 2));
+  if (format === gl.RGBA32F) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.FLOAT, new Float32Array(width * height * 4));
+  else if (format === gl.RGBA16I) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA_INTEGER, gl.SHORT, new Int16Array(width * height * 4));
+  else gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RED_INTEGER, gl.UNSIGNED_INT, new Uint32Array(width * height));
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);  // read with texelFetch, but
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);  // float textures can't filter
   gl.activeTexture(gl.TEXTURE0);
@@ -449,19 +528,36 @@ dataTexture(3, gl.RGBA32F, clumpWidth, terrain.slots.length);
 // chunk's rows of the bamboo's textures go through a buffer of their own (uploadTexels).
 const TURNS = 3;
 let turn = 0;
-const listTextures = Array.from({ length: TURNS }, () => dataTexture(4, gl.RG32UI, LIST_WIDTH, LIST_ROWS));
+const listTextures = Array.from({ length: TURNS }, () => dataTexture(4, gl.R32UI, LIST_WIDTH, LIST_ROWS));
+const bendTextures = Array.from({ length: TURNS }, () => dataTexture(8, gl.R32UI, LIST_WIDTH, LIST_ROWS));
+// The chunks' vertices (see chunkCopies) on unit 7; and per turn, the copies' buffer and a VAO
+// reading it (and the index list every chunk shares).
+dataTexture(7, gl.RGBA16I, CHUNK_VERTICES, terrain.slots.length);
+for (let k = 0; k < TURNS; k++) {
+  chunkVaos.push(gl.createVertexArray());
+  gl.bindVertexArray(chunkVaos[k]);
+  chunkCopyBuffers.push(gl.createBuffer());
+  gl.bindBuffer(gl.ARRAY_BUFFER, chunkCopyBuffers[k]);
+  gl.bufferData(gl.ARRAY_BUFFER, chunkCopies.byteLength, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 16, 0);
+  gl.vertexAttribDivisor(0, 1);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, chunkIndexBuffer);
+}
+gl.bindVertexArray(null);
 
-// `count` texels from `data` into the float texture on `unit`, `width` texels wide, from texel
-// `start` on (along its rows, on to the next where one ends). Copied into a new buffer, which the
-// GPU then copies into the texture in its own time, after the draws already sent that read it.
+// `count` texels from `data` into the texture on `unit` (4 numbers a texel: floats, or for the
+// chunks' vertices, `format` and `type` say 16-bit integers), `width` texels wide, from texel `start`
+// on (along its rows, on to the next where one ends). Copied into a new buffer, which the GPU then
+// copies into the texture in its own time, after the draws already sent that read it.
 const rowBuffer = gl.createBuffer();
-function uploadTexels(unit, width, start, data, count) {
+function uploadTexels(unit, width, start, data, count, format = gl.RGBA, type = gl.FLOAT) {
   gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, rowBuffer);
   gl.bufferData(gl.PIXEL_UNPACK_BUFFER, data, gl.STREAM_DRAW, 0, count * 4);  // new storage each time
   gl.activeTexture(gl.TEXTURE0 + unit);
   for (let done = 0; done < count;) {
     const at = start + done, x = at % width, n = Math.min(width - x, count - done);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, Math.floor(at / width), n, 1, gl.RGBA, gl.FLOAT, done * 16);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, Math.floor(at / width), n, 1, format, type, done * 4 * data.BYTES_PER_ELEMENT);
     done += n;
   }
   gl.activeTexture(gl.TEXTURE0);
@@ -520,6 +616,7 @@ gl.useProgram(treeProgram);
 gl.uniform1i(gl.getUniformLocation(treeProgram, 'uTree'), 6);
 const natureUniforms = { fade: gl.getUniformLocation(natureProgram, 'uFade'), sway: gl.getUniformLocation(natureProgram, 'uSway'),
   bloom: gl.getUniformLocation(natureProgram, 'uBloom') };
+let natureFade = [0, 0], natureSway = 0, natureBloom = null;  // what those are set to now
 gl.activeTexture(gl.TEXTURE0);
 for (const program of [terrainProgram, stalkProgram, leavesProgram, skyProgram, builtProgram, natureProgram]) {
   gl.useProgram(program);
@@ -527,6 +624,7 @@ for (const program of [terrainProgram, stalkProgram, leavesProgram, skyProgram, 
 }
 gl.useProgram(terrainProgram);
 gl.uniform1i(gl.getUniformLocation(terrainProgram, 'uPuddles'), 5);
+gl.uniform1i(gl.getUniformLocation(terrainProgram, 'uTerrain'), 7);
 gl.useProgram(clumpProgram);
 gl.uniform1i(gl.getUniformLocation(clumpProgram, 'uGround'), 1);
 const [stalkUniforms, leavesUniforms, clumpUniforms] = [stalkProgram, leavesProgram, clumpProgram].map(program => {
@@ -534,12 +632,12 @@ const [stalkUniforms, leavesUniforms, clumpUniforms] = [stalkProgram, leavesProg
   gl.uniform1i(gl.getUniformLocation(program, 'uStalks'), 2);
   gl.uniform1i(gl.getUniformLocation(program, 'uClumps'), 3);
   gl.uniform1i(gl.getUniformLocation(program, 'uList'), 4);
+  gl.uniform1i(gl.getUniformLocation(program, 'uBends'), 8);
   return { first: gl.getUniformLocation(program, 'uFirst'), stride: gl.getUniformLocation(program, 'uStride') };
 });
 
-const uChunk = gl.getUniformLocation(terrainProgram, 'uChunk');
 const uWaterChunk = gl.getUniformLocation(waterProgram, 'uChunk');
-const uModel = gl.getUniformLocation(carProgram, 'uModel');
+const uModels = gl.getUniformLocation(carProgram, 'uModels'), uFirstModel = gl.getUniformLocation(carProgram, 'uFirst');
 const uPointScale = gl.getUniformLocation(particleProgram, 'uPointScale');
 
 // --- Per-frame values shared by every shader: one Uniform Buffer Object (UBO), uploaded
@@ -577,7 +675,9 @@ const proj = mat4();
 const view = mat4();
 const planes = new Float32Array(24);  // the camera's 6 view-volume planes, for culling
 const spinMatrix = mat4(), steerMatrix = mat4(), wheelOffset = translation(mat4(), 0, 0, 0);
-const wheelLocal = mat4(), wheelModel = mat4();
+const wheelLocal = mat4();
+// The car's: the body's, then the four wheels' (car.vert's uModels).
+const carModels = new Float32Array(5 * 16), wheelModels = [1, 2, 3, 4].map(k => carModels.subarray(16 * k, 16 * (k + 1)));
 
 gl.enable(gl.DEPTH_TEST);  // nearer things hide further ones
 // Or as near: the sky is drawn at the far plane, depth 1, the same as the cleared depth, and shows
@@ -736,15 +836,19 @@ function drawList(uniforms, model, from, to) {
 }
 
 // What the car's body bumps against: the bridges' railings, the trees' trunks and the boulders,
-// the deepest.
-const treeNormal = new Float64Array(3);
+// the deepest. Only the trees and boulders within WALL_REACH m of the car, found once a frame
+// (nearTrees, nearBoulders): the car's points are at most ~2.5 m from it, a trunk or boulder at most
+// 1.3 m round, and in a frame (0.1 s at most) the car goes no more than ~3.5 m. (Every tree found,
+// for every point of the car, at every physics step, until 3 Oct 2026: ~0.05 ms a frame in Node.)
+const WALL_REACH = 10;  // m
+const treeNormal = new Float64Array(3), nearTrees = [];
+let nearTreeCount = 0;
 const wallAt = (x, y, z, normal) => {
   let deepest = bridgeWall(terrain.bridges, x, y, z, normal);
-  for (const depth of [treeWall(terrain.trees, x, y, z, treeNormal), rockWall(boulders, x, y, z, treeNormal)]) {
-    if (depth <= deepest) continue;
-    deepest = depth;
-    normal[0] = treeNormal[0]; normal[1] = treeNormal[1]; normal[2] = treeNormal[2];
-  }
+  const tree = treeWall(nearTrees, x, y, z, treeNormal, nearTreeCount);
+  if (tree > deepest) { deepest = tree; normal[0] = treeNormal[0]; normal[1] = treeNormal[1]; normal[2] = treeNormal[2]; }
+  const rock = rockWall(nearBoulders, x, y, z, treeNormal);
+  if (rock > deepest) { deepest = rock; normal[0] = treeNormal[0]; normal[1] = treeNormal[1]; normal[2] = treeNormal[2]; }
   return deepest;
 };
 
@@ -757,10 +861,11 @@ const ground = {
 
 // --- Game loop: the browser calls this before every screen refresh ---
 
-let lastTime = -1;
+let lastTime = -1, steps = 0;
 
-function frame(timeMs) {
-  profiler?.frameStart(timeMs);
+function frame(realMs) {
+  profiler?.frameStart(realMs);
+  const timeMs = fixedStep ? steps++ * fixedStep : realMs;
 
   // Seconds since last frame, capped so a paused tab doesn't launch the car on return.
   const first = lastTime < 0;
@@ -782,6 +887,13 @@ function frame(timeMs) {
     steer = Math.abs(stick.x) > 0.1 ? -stick.x : 0;  // as far as it's pushed (left is +)
   }
   const handbrake = held.has('Space') ? 1 : 0;
+  if (nearTrees.length < terrain.trees.length) nearTrees.length = terrain.trees.length;
+  nearTreeCount = treesNear(terrain.trees, car.x, car.z, WALL_REACH, nearTrees);
+  for (let k = 0; k < boulders.length; k++) {
+    const b = boulders[k], near = nearBoulders[k];
+    if (near.list.length < b.count) near.list = new Float32Array(b.count);
+    near.count = copiesNear(b.list, b.count, car.x, car.z, WALL_REACH, near.list);
+  }
   updateCar(car, throttle, brake, handbrake, steer, dt, terrain.groundAt, wallAt, terrain.waterAt);
   const m = car.model;  // columns: side (0-2), up (4-6), forward (8-10), position (12-14)
   for (let k = 0; k < 3; k++) {
@@ -837,9 +949,7 @@ function frame(timeMs) {
   for (let i = 0; i < terrain.slots.length; i++) {
     const slot = terrain.slots[i];
     if (slot.version === uploadedVersion[i] || !slot.ready) continue;
-    // New storage, rather than refilling what the slot's last chunk may still be drawn from.
-    gl.bindBuffer(gl.ARRAY_BUFFER, chunkBuffers[i]);
-    gl.bufferData(gl.ARRAY_BUFFER, slot.vertices, gl.DYNAMIC_DRAW);
+    uploadTexels(7, CHUNK_VERTICES, i * CHUNK_VERTICES, slot.vertices, CHUNK_VERTICES, gl.RGBA_INTEGER, gl.SHORT);
     if (slot.wet) {
       gl.bindBuffer(gl.ARRAY_BUFFER, waterBuffers[i]);
       gl.bufferData(gl.ARRAY_BUFFER, slot.water, gl.DYNAMIC_DRAW);
@@ -851,17 +961,15 @@ function frame(timeMs) {
     uploadedVersion[i] = slot.version;
   }
   if (terrain.bridgesVersion !== builtVersion) {
-    const blocks = [];
-    bridgeBlocks(terrain.bridges, blocks);
-    gl.bindBuffer(gl.ARRAY_BUFFER, builtBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(blocks), gl.STATIC_DRAW);
-    builtVertices = blocks.length / BLOCK_FLOATS;
+    bridgeWriter.n = bridgeWriter.ni = 0;
+    bridgeBlocks(terrain.bridges, bridgeWriter);
+    fillBuilt(bridgeBuilt, bridgeWriter.vertices, bridgeWriter.indices, bridgeWriter.n, bridgeWriter.ni);
     builtVersion = terrain.bridgesVersion;
   }
   if (terrain.treesVersion !== treesVersion) {
     // Free the slots of trees no longer near; the newly found wait for one, nearest first.
     const near = new Set(terrain.trees);
-    for (const slot of treeSlots) if (slot.tree && !near.has(slot.tree)) { slot.tree = null; slot.near = 0; slot.held = false; }
+    for (const slot of treeSlots) if (slot.tree && !near.has(slot.tree)) { slot.tree = null; slot.indices = slot.near = 0; slot.held = false; }
     treesWaiting = terrain.trees.filter(tree => tree.kind !== 'broadleaf' && !treeSlots.some(slot => slot.tree === tree));
     treesWaiting.sort((a, b) => Math.hypot(b.x - camera.x, b.z - camera.z) - Math.hypot(a.x - camera.x, a.z - camera.z));
     // The broadleaf trees, by shape (new storage each time, as the last set may still be drawn).
@@ -883,32 +991,37 @@ function frame(timeMs) {
     gl.bindBuffer(gl.ARRAY_BUFFER, shape.instances);
     gl.bufferData(gl.ARRAY_BUFFER, shape.list.subarray(0, 5 * shape.count), gl.DYNAMIC_DRAW);
   }
-  // One tree's model made a frame at most (all at once, as a group came into reach, was a
-  // stutter: up to 21 ms each in headless Chrome, before trees.js wrote them faster): first, the
-  // nearest tree coming within TREE_DETAIL m that has only its far model, its near one too; else the
-  // nearest newly found tree, its far model only. But after a jump, every tree within SEEN m at
-  // once (near ones whole), in the one long frame where the picture changes completely anyway: one
-  // a frame, nearest first, they sprang up round the car (until 3 Oct 2026). And a newly found tree
-  // whose model's made while it's in view, not deep in the mist, came late and would be seen
-  // appearing: it's held back (not drawn) until it's out of view or beyond SEEN.
+  // One tree's model a frame at most (all at once, as a group came into reach, was a stutter: up
+  // to 21 ms each in headless Chrome, before trees.js wrote them faster), or one asked of the worker
+  // at a time: first, the nearest tree coming within TREE_DETAIL m that has only its far model, its
+  // near one too; else the nearest newly found tree, its far model only. But after a jump, every
+  // tree within SEEN m at once (near ones whole), here, in the one long frame where the picture
+  // changes completely anyway: one a frame, nearest first, they sprang up round the car (until 3 Oct
+  // 2026). And a newly found tree whose model came while it's in view, not deep in the mist, came
+  // late and would be seen appearing: it's held back (not drawn) until it's out of view or beyond
+  // SEEN (worked out the first time it could be drawn: below).
   if (jumped) {
     for (let tree = treesWaiting.pop(); tree; tree = treesWaiting.pop()) {
-      const range = Math.hypot(tree.x - camera.x, tree.z - camera.z), slot = treeSlots.find(slot => !slot.tree);
+      const range = Math.hypot(tree.x - camera.x, tree.z - camera.z), slot = freeTreeSlot();
       if (range > SEEN || !slot) { treesWaiting.push(tree); break; }
-      makeTree(slot, tree, range < TREE_DETAIL, false);
+      makeTree(slot, tree, range < TREE_DETAIL);
+      slot.fresh = false;  // (seen at once: the whole picture's new)
     }
   }
-  let detail = null;
-  for (const slot of treeSlots) {
-    if (!slot.tree || slot.near) continue;
-    const range = Math.hypot(slot.tree.x - camera.x, slot.tree.z - camera.z);
-    if (range < TREE_DETAIL && (!detail || range < detail.range)) { detail = slot; detail.range = range; }
-  }
-  const free = detail ? null : treesWaiting.length ? treeSlots.find(slot => !slot.tree) : null;  // (none: more than TREE_SLOTS near, the rest wait)
-  if (detail) makeTree(detail, detail.tree, true, detail.held);
-  else if (free) {
-    const tree = treesWaiting.pop();
-    makeTree(free, tree, false, Math.hypot(tree.x - camera.x, tree.z - camera.z) < SEEN && treeInView(tree));
+  if (!treeAsked) {
+    let detail = null;
+    for (const slot of treeSlots) {
+      if (!slot.tree || !slot.indices || slot.near || slot.asked) continue;
+      const range = Math.hypot(slot.tree.x - camera.x, slot.tree.z - camera.z);
+      if (range < TREE_DETAIL && (!detail || range < detail.range)) { detail = slot; detail.range = range; }
+    }
+    const free = detail ? null : treesWaiting.length ? freeTreeSlot() : null;  // (none: more than TREE_SLOTS near, the rest wait)
+    if (detail) {
+      if (treeWorker) askTree(detail, detail.tree, true); else makeTree(detail, detail.tree, true);
+    } else if (free) {
+      const tree = treesWaiting.pop();
+      if (treeWorker) askTree(free, tree, false); else makeTree(free, tree, false);
+    }
   }
   // The ground cover: when the chunks drawn change, or a tree comes or goes.
   let signature = terrain.drawCount;
@@ -951,7 +1064,18 @@ function frame(timeMs) {
   gl.activeTexture(gl.TEXTURE4);
   gl.bindTexture(gl.TEXTURE_2D, listTextures[turn]);
   if (entries) {
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, LIST_WIDTH, Math.ceil(entries / LIST_WIDTH), gl.RG_INTEGER, gl.UNSIGNED_INT, bamboo.list);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, LIST_WIDTH, Math.ceil(entries / LIST_WIDTH), gl.RED_INTEGER, gl.UNSIGNED_INT, bamboo.list);
+  }
+  // The bends, if any are bent: the near ones' row (or rows), and the far ones' from the first to the
+  // last bent. (None bent, nothing reads them: this turn's texture needn't even be bound.)
+  if (bamboo.nearBent || bamboo.firstBent >= 0) {
+    gl.activeTexture(gl.TEXTURE8);
+    gl.bindTexture(gl.TEXTURE_2D, bendTextures[turn]);
+    if (bamboo.nearBent) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, LIST_WIDTH, Math.ceil(bamboo.near / LIST_WIDTH), gl.RED_INTEGER, gl.UNSIGNED_INT, bamboo.listBends);
+    if (bamboo.firstBent >= 0) {
+      const from = Math.floor(bamboo.firstBent / LIST_WIDTH), to = Math.floor(bamboo.lastBent / LIST_WIDTH) + 1;
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, from, LIST_WIDTH, to - from, gl.RED_INTEGER, gl.UNSIGNED_INT, bamboo.listBends, from * LIST_WIDTH);
+    }
   }
   gl.activeTexture(gl.TEXTURE0);
 
@@ -964,16 +1088,12 @@ function frame(timeMs) {
 
   // Car first: it's nearest, so the terrain pixels it covers fail the depth test
   // and are never shaded.
+  // The body's matrix and the wheels' (each spun about its axle and moved to where its spring
+  // holds it; the front two also steer) go up together; then the body's drawn, and the wheel four
+  // times, as copies, each with its own (car.vert). (A matrix and a draw each until 3 Oct 2026.)
   gl.useProgram(carProgram);
   profiler?.begin(1);
-  gl.bindTexture(gl.TEXTURE_2D, bodyTexture);
-  gl.bindVertexArray(bodyVao);
-  gl.uniformMatrix4fv(uModel, false, car.model);
-  gl.drawElements(gl.TRIANGLES, bodyIndexCount, gl.UNSIGNED_SHORT, 0);
-  // Wheels: each spun about its axle and moved to where its spring holds it; the front two
-  // also steer.
-  gl.bindTexture(gl.TEXTURE_2D, wheelTexture);
-  gl.bindVertexArray(wheelVao);
+  carModels.set(car.model);
   rotationY(steerMatrix, car.steerAngle);
   for (let i = 0; i < 4; i++) {
     const wheel = car.wheels[i];
@@ -981,17 +1101,24 @@ function frame(timeMs) {
     if (wheel.front) multiply(spinMatrix, steerMatrix, spinMatrix);
     wheelOffset[12] = wheel.x; wheelOffset[13] = wheel.y; wheelOffset[14] = wheel.z;
     multiply(wheelLocal, wheelOffset, spinMatrix);
-    multiply(wheelModel, car.model, wheelLocal);
-    gl.uniformMatrix4fv(uModel, false, wheelModel);
-    gl.drawElements(gl.TRIANGLES, wheelIndexCount, gl.UNSIGNED_SHORT, 0);
+    multiply(wheelModels[i], car.model, wheelLocal);
   }
+  gl.uniformMatrix4fv(uModels, false, carModels);
+  gl.bindTexture(gl.TEXTURE_2D, bodyTexture);
+  gl.bindVertexArray(bodyVao);
+  gl.uniform1i(uFirstModel, 0);
+  gl.drawElements(gl.TRIANGLES, bodyIndexCount, gl.UNSIGNED_SHORT, 0);
+  gl.bindTexture(gl.TEXTURE_2D, wheelTexture);
+  gl.bindVertexArray(wheelVao);
+  gl.uniform1i(uFirstModel, 1);
+  gl.drawElementsInstanced(gl.TRIANGLES, wheelIndexCount, gl.UNSIGNED_SHORT, 0, 4);
   profiler?.end();
 
   // The bridges: few, and in front of the land under them.
-  if (builtVertices) {
+  if (bridgeBuilt.indices) {
     gl.useProgram(builtProgram);
-    gl.bindVertexArray(builtVao);
-    gl.drawArrays(gl.TRIANGLES, 0, builtVertices);
+    gl.bindVertexArray(bridgeBuilt.vao);
+    gl.drawElements(gl.TRIANGLES, bridgeBuilt.indices, bridgeBuilt.type, 0);
   }
   // The cherry and maple trees: both sides of the blossom's and leaves' cards.
   profiler?.begin(9);
@@ -1003,45 +1130,62 @@ function frame(timeMs) {
   treesDrawn.length = 0;
   for (const slot of treeSlots) {
     const tree = slot.tree;
-    if (!tree) continue;
+    if (!tree || !slot.indices) continue;
     const inView = treeInView(tree);
     slot.range = Math.hypot(tree.x - camera.x, tree.z - camera.z);
+    if (slot.fresh) { slot.held = inView && slot.range < SEEN; slot.fresh = false; }
     if (slot.held) {
       if (inView && slot.range < SEEN) continue;
       slot.held = false;
     }
-    if (inView) treesDrawn.push(slot);
+    if (!inView) continue;
+    // Into place, nearest first (by insertion: a handful, and nothing made, as sort can).
+    let k = treesDrawn.length;
+    treesDrawn.push(slot);
+    for (; k > 0 && treesDrawn[k - 1].range > slot.range; k--) treesDrawn[k] = treesDrawn[k - 1];
+    treesDrawn[k] = slot;
   }
-  treesDrawn.sort(byRange);
   for (const slot of treesDrawn) {
     gl.bindVertexArray(slot.vao);
-    if (slot.range < TREE_LOD && slot.near) gl.drawArrays(gl.TRIANGLES, 0, slot.near);
-    else gl.drawArrays(gl.TRIANGLES, slot.near, slot.vertices - slot.near);
+    if (slot.range < TREE_LOD && slot.near) gl.drawElements(gl.TRIANGLES, slot.near, slot.type, 0);
+    else gl.drawElements(gl.TRIANGLES, slot.indices - slot.near, slot.type, slot.near * slot.size);
   }
   gl.useProgram(treeProgram);
   for (const shape of broadleaf) {
     if (!shape.count) continue;
     gl.bindVertexArray(shape.vao);
-    gl.drawArraysInstanced(gl.TRIANGLES, 0, shape.vertices, shape.count);
+    gl.drawElementsInstanced(gl.TRIANGLES, shape.indices, gl.UNSIGNED_SHORT, 2 * shape.firstIndex, shape.count);
   }
   profiler?.end();
   // The ground cover: ferns, rocks, then bushes (both sides of the fronds and cards).
   profiler?.begin(10);
   gl.useProgram(natureProgram);
   natureView();
+  // Per kind, only the calls that change something: the uniforms (the program's, for every kind)
+  // when they differ from the last kind's; the copies' attributes (its VAO's) when its run of them
+  // starts elsewhere than last time. (Every call for every kind, every frame, until 3 Oct 2026: ~130
+  // calls a frame, now ~45.)
   for (const nk of natureKinds) {
     if (!nk.copies || !natureOn) continue;
-    gl.uniform2f(natureUniforms.fade, nk.kind.fade[0], nk.kind.fade[1]);
-    gl.uniform1f(natureUniforms.sway, nk.kind.sway);
-    if (nk.kind.bloom) gl.uniform3fv(natureUniforms.bloom, nk.kind.bloom);
-    gl.bindVertexArray(nk.vao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, nk.instances);
+    let bound = false;
     for (let r = 0; r < natureRunCount; r++) {
       const from = nk.starts[natureRuns[2 * r]], count = nk.starts[natureRuns[2 * r + 1]] - from;
       if (!count) continue;
-      // (WebGL2 can't start an instanced draw part way through: the copies' attributes moved instead.)
-      gl.vertexAttribPointer(4, 4, gl.FLOAT, false, INSTANCE_FLOATS * 4, from * INSTANCE_FLOATS * 4);
-      gl.vertexAttribPointer(5, 1, gl.FLOAT, false, INSTANCE_FLOATS * 4, (from * INSTANCE_FLOATS + 4) * 4);
+      if (!bound) {
+        const kind = nk.kind;
+        if (kind.fade[0] !== natureFade[0] || kind.fade[1] !== natureFade[1]) { natureFade = kind.fade; gl.uniform2f(natureUniforms.fade, natureFade[0], natureFade[1]); }
+        if (kind.sway !== natureSway) { natureSway = kind.sway; gl.uniform1f(natureUniforms.sway, natureSway); }
+        if (kind.bloom && kind.bloom !== natureBloom) { natureBloom = kind.bloom; gl.uniform3fv(natureUniforms.bloom, natureBloom); }
+        gl.bindVertexArray(nk.vao);
+        bound = true;
+      }
+      if (from !== nk.pointed) {
+        // (WebGL2 can't start an instanced draw part way through: the copies' attributes moved instead.)
+        gl.bindBuffer(gl.ARRAY_BUFFER, nk.instances);
+        gl.vertexAttribPointer(4, 4, gl.FLOAT, false, INSTANCE_FLOATS * 4, from * INSTANCE_FLOATS * 4);
+        gl.vertexAttribPointer(5, 1, gl.FLOAT, false, INSTANCE_FLOATS * 4, (from * INSTANCE_FLOATS + 4) * 4);
+        nk.pointed = from;
+      }
       gl.drawElementsInstanced(gl.TRIANGLES, nk.indices, gl.UNSIGNED_SHORT, 2 * nk.firstIndex, count);
     }
   }
@@ -1073,17 +1217,21 @@ function frame(timeMs) {
   gl.enable(gl.CULL_FACE);
 
   // Terrain, nearest chunks first, for the same reason as the car: terrain.update listed them
-  // in that order. Per visible chunk, 3 calls (bind its VAO, say where it is, draw).
+  // in that order (and copies are drawn in order). One draw, a copy for each chunk in view.
   gl.useProgram(terrainProgram);
   profiler?.begin(3);
   let drawn = 0;
   for (let k = 0; k < terrain.drawCount; k++) {
     const i = terrain.drawList[k], chunk = terrain.slots[i];
     if (cull && !chunkVisible(chunk)) continue;
-    gl.bindVertexArray(chunkVaos[i]);
-    gl.uniform3f(uChunk, chunk.x, chunk.z, chunk.spacing);
-    gl.drawElements(gl.TRIANGLES, terrain.indices.length, gl.UNSIGNED_SHORT, 0);
+    chunkCopies[4 * drawn] = chunk.x; chunkCopies[4 * drawn + 1] = chunk.z; chunkCopies[4 * drawn + 2] = chunk.spacing; chunkCopies[4 * drawn + 3] = i;
     drawn++;
+  }
+  if (drawn) {
+    gl.bindVertexArray(chunkVaos[turn]);
+    gl.bindBuffer(gl.ARRAY_BUFFER, chunkCopyBuffers[turn]);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, chunkCopies, 0, 4 * drawn);
+    gl.drawElementsInstanced(gl.TRIANGLES, terrain.indices.length, gl.UNSIGNED_SHORT, 0, drawn);
   }
   profiler?.end();
   profiler?.count(0, drawn);

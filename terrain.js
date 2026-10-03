@@ -956,6 +956,267 @@ function edgeVertex(side, t) {
   return side === 0 ? t : side === 1 ? CHUNK_QUADS * CHUNK_VERTS + t : side === 2 ? t * CHUNK_VERTS : t * CHUNK_VERTS + CHUNK_QUADS;
 }
 
+// A slot for a chunk of `level` (createTerrain's, or the worker's to build in).
+export function newSlot(index, level) {
+  const spacing = 1 << level, size = CHUNK_QUADS * spacing;
+  return {
+    index, level, spacing, size,
+    cx: 0, cz: 0,        // which chunk of its level it holds
+    x: 0, z: 0,          // world position of its first vertex
+    // Per vertex, 4 16-bit numbers: height in cm; cm from the road's edge, frayed (see
+    // buildRow); then as bytes, the ground's unit normal x, y, z, each × 127, and how thick the
+    // bamboo grows (grove, × 127). Then the skirts' vertices.
+    vertices: new Int16Array((VERTICES + SKIRT_VERTICES) * VERTEX_SHORTS),
+    // Heights in m, one row and column wider on each side than the chunk: the normals at its
+    // edges need the heights just beyond them.
+    heights: new Float32Array(BORDERED * BORDERED),
+    minY: 0, maxY: 0,    // the box it fits in (skirts included), for culling
+    rowsBuilt: -1,       // rows of `heights` done; -1: not started
+    ready: false,        // all its rows built
+    pending: false,      // asked of the worker (createTerrain's `worker`), and not back yet
+    version: 0,          // goes up each time it's rebuilt, so main.js knows to re-upload it
+    roads: createRoadList(ROAD_PIECES),
+    // Near a river, its water's layer: per vertex, the water's height in cm and how deep it is
+    // there (cm; negative above it, and -1000 away from the river), for water.vert; and whether
+    // any of it is near a river (else it has none to draw).
+    water: new Int16Array(VERTICES * 2), wet: false,
+    // The first STALK_LEVELS levels': its bamboo (plantBamboo), STALK_FLOATS per stalk, a square
+    // after another, how many stalks, and where each square's start (and after the last, end).
+    stalks: level < STALK_LEVELS ? new Float32Array((size / PLANT) ** 2 * STALK_FLOATS) : null, stalkCount: 0,
+    squareStarts: level < STALK_LEVELS ? new Uint16Array((size / CLUMP) ** 2 + 1) : null,
+    // Every level's: its far bamboo (plantClumps), CLUMP_FLOATS per clump, how many, and each
+    // one's square.
+    clumps: new Float32Array((size / CLUMP) ** 2 * CLUMP_FLOATS), clumpCount: 0,
+    clumpSquares: new Uint16Array((size / CLUMP) ** 2),
+  };
+}
+
+const STRETCH = 11;  // vertices: a row of 33 is 3 stretches
+const nearby = createRoadList(ROAD_PIECES);
+
+// Build one row of a chunk's bordered heights (the first call also finds the roads near it).
+// Rows inside the chunk also become vertices; and once the row after a vertex row is done,
+// that row's normals can be worked out from the heights around each vertex. Then, at the levels
+// that plant stalks, a row of its squares' stalks a call (a level-1 chunk plants 1,600 places:
+// all at once, 0.2-0.3 ms past the building's budget); then it's ready.
+function buildRow(slot) {
+  if (slot.rowsBuilt >= BORDERED) {
+    plantBamboo(slot, slot.rowsBuilt - BORDERED);
+    if (++slot.rowsBuilt === BORDERED + slot.size / CLUMP) finish(slot);
+    return;
+  }
+  const s = slot.spacing;
+  if (slot.rowsBuilt < 0) {
+    findRoads(slot.roads, slot.x - ROAD_REACH, slot.z - ROAD_REACH,
+      slot.x + slot.size + ROAD_REACH, slot.z + slot.size + ROAD_REACH);
+    slot.minY = Infinity; slot.maxY = -Infinity;
+    slot.wet = false;
+    slot.rowsBuilt = 0;
+  }
+  const row = slot.rowsBuilt, z = row - 1;  // z: vertex row, from -1 to CHUNK_VERTS
+  const v = slot.vertices, heights = slot.heights, wz = slot.z + z * s;
+  let far = false;
+  for (let x = -1; x <= CHUNK_VERTS; x++) {
+    const wx = slot.x + x * s;
+    // Only the roads that matter here, a stretch of the row at a time: most of the chunk's are
+    // too far from any one stretch to change it (a third of the time building, before).
+    // Where they're all too far to change anything, not even that.
+    if ((x + 1) % STRETCH === 0) far = nearbyRoads(slot.roads, nearby, wx + (STRETCH - 1) / 2 * s, wz, (STRETCH - 1) / 2 * s) >= FAR;
+    if (far) farFromRoads();
+    else roadDistance(nearby, wx, wz);
+    const river = riverDistance(wx, wz), land = landHeight(wx, wz, found[LAND_EDGE], found[LIFT], river);
+    const height = riverBed(wx, wz, land, river);
+    heights[row * BORDERED + x + 1] = height;
+    if (x < 0 || x >= CHUNK_VERTS || z < 0 || z >= CHUNK_VERTS) continue;  // the border
+    const cm = Math.min(Math.max(Math.round(height * 100), -32767), 32767);
+    const o = (z * CHUNK_VERTS + x) * VERTEX_SHORTS;
+    v[o] = cm;
+    // The road's edge for the shader to paint, frayed: in and out by up to about FRAY m, so the
+    // sand wanders into the grass. (Only near it: further out, nothing is painted by it.)
+    let edge = found[EDGE];
+    if (edge < 8) edge += FRAY * noise(wx / FRAY_WAVE, wz / FRAY_WAVE, 80);
+    // Where a river's banks cut a road away (under a bridge), no road is painted.
+    if (height < land - RIVER_CUT) edge = Math.max(edge, UNPAINTED);
+    v[o + 1] = Math.min(Math.max(Math.round(edge * 100), -32767), 32767);
+    // The grove; its normal's z joins it below. In the river and on its wet banks, instead, how
+    // much riverbed it is, negative: -127 under the water, fading to 0 up the bank.
+    const bed = 1 - smoothstep(RIVER_HALF + WET_FROM, RIVER_HALF + WET_TO, river);
+    v[o + 3] = (bed > 0 ? -Math.round(127 * bed) : Math.round(127 * grove(wx, wz, found[EDGE], river))) << 8;
+    // The water's layer.
+    const w = (z * CHUNK_VERTS + x) * 2;
+    if (river < RIVER_HALF + WATER_REACH) {
+      const water = waterLevel(wx, wz);
+      slot.water[w] = Math.min(Math.max(Math.round(water * 100), -32767), 32767);
+      slot.water[w + 1] = Math.min(Math.max(Math.round((water - height) * 100), -1000), 32767);
+      slot.wet = true;
+    } else {
+      slot.water[w] = cm; slot.water[w + 1] = -1000;
+    }
+    slot.minY = Math.min(slot.minY, cm / 100);
+    slot.maxY = Math.max(slot.maxY, cm / 100);
+  }
+  if (z >= 1) {
+    // Normals of the vertex row before this one: the slope across each vertex, from the
+    // heights either side of it. Smooth: each is shared by the 6 triangles round the vertex.
+    const nz = z - 1, above = row * BORDERED, below = (row - 2) * BORDERED;
+    for (let x = 0; x < CHUNK_VERTS; x++) {
+      const slopeX = (heights[(row - 1) * BORDERED + x + 2] - heights[(row - 1) * BORDERED + x]) / (2 * s);
+      const slopeZ = (heights[above + x + 1] - heights[below + x + 1]) / (2 * s);
+      const scale = 127 / Math.sqrt(slopeX * slopeX + 1 + slopeZ * slopeZ);
+      const o = (nz * CHUNK_VERTS + x) * VERTEX_SHORTS;
+      v[o + 2] = Math.round(-slopeX * scale) & 255 | Math.round(scale) << 8;
+      v[o + 3] = v[o + 3] & 0xff00 | Math.round(-slopeZ * scale) & 255;  // beside the grove's byte
+    }
+  }
+  if (++slot.rowsBuilt === BORDERED) {
+    addSkirts(slot);
+    if (slot.level >= STALK_LEVELS) finish(slot);
+  }
+}
+function finish(slot) {
+  plantClumps(slot);
+  slot.ready = true;
+  slot.version++;
+}
+
+// The skirts' vertices: the edge ones again, lower.
+function addSkirts(slot) {
+  const v = slot.vertices, drop = SKIRT * slot.spacing;
+  for (let side = 0; side < 4; side++) {
+    for (let t = 0; t < CHUNK_VERTS; t++) {
+      const from = edgeVertex(side, t) * VERTEX_SHORTS, to = (VERTICES + side * CHUNK_VERTS + t) * VERTEX_SHORTS;
+      for (let k = 0; k < VERTEX_SHORTS; k++) v[to + k] = v[from + k];
+      v[to] = Math.max(v[from] - drop * 100, -32767);
+    }
+  }
+  slot.minY -= drop;
+}
+
+// The chunk's bamboo (see "Bamboo", above), in the squares of row `strip`: the road's edge at each
+// stalk and the ground's height from its finished vertices (the height on the same triangles as
+// heightAt), the grove afresh.
+function plantBamboo(slot, strip) {
+  const v = slot.vertices, stalks = slot.stalks, s = slot.spacing, cells = slot.size / PLANT, across = slot.size / CLUMP;
+  const S = VERTEX_SHORTS, next = CHUNK_VERTS * VERTEX_SHORTS, perSquare = CLUMP / PLANT;
+  let count = strip === 0 ? 0 : slot.squareStarts[strip * across];
+  for (let q = strip * across; q < (strip + 1) * across; q++) {
+    slot.squareStarts[q] = count;
+    for (let k = 0; k < perSquare * perSquare; k++) {
+      const i = q % across * perSquare + k % perSquare, j = Math.floor(q / across) * perSquare + Math.floor(k / perSquare);
+      const where = hash(slot.cx * cells + i, slot.cz * cells + j, 150);
+      const x = (i + (where & 1023) / 1024) * PLANT, z = (j + (where >>> 10 & 1023) / 1024) * PLANT;
+      const gx = Math.min(Math.floor(x / s), CHUNK_QUADS - 1), gz = Math.min(Math.floor(z / s), CHUNK_QUADS - 1);
+      const fx = x / s - gx, fz = z / s - gz, o = (gz * CHUNK_VERTS + gx) * S;
+      const ea = v[o + 1], eb = v[o + S + 1], ec = v[o + next + 1], ed = v[o + next + S + 1];
+      const edge = 0.01 * (ea + (eb - ea) * fx + (ec - ea) * fz + (ea - eb - ec + ed) * fx * fz);
+      if ((where >>> 20 & 1023) / 1024 >= grove(slot.x + x, slot.z + z, edge)) continue;
+      const a = v[o], b = v[o + S], c = v[o + next], d = v[o + next + S];
+      const y = 0.01 * (fx + fz <= 1 ? a + (b - a) * fx + (c - a) * fz : d - (d - c) * (1 - fx) - (d - b) * (1 - fz));
+      const look = hash(slot.cx * cells + i, slot.cz * cells + j, 151), size = (look & 255) / 255;
+      // Leaning: a little any way, and out over the road, which is where the edge's distance falls.
+      let leanX = LEAN * ((look >>> 13 & 255) / 127.5 - 1), leanZ = LEAN * ((look >>> 21 & 255) / 127.5 - 1);
+      if (edge < LEAN_REACH) {
+        const slopeX = eb - ea + ed - ec, slopeZ = ec - ea + ed - eb, length = Math.sqrt(slopeX * slopeX + slopeZ * slopeZ);
+        if (length > 0) {
+          const out = LEAN_OUT * (1 - edge / LEAN_REACH) / length;
+          leanX -= slopeX * out; leanZ -= slopeZ * out;
+        }
+      }
+      const lean = Math.sqrt(leanX * leanX + leanZ * leanZ), within = lean > MAX_LEAN ? MAX_LEAN / lean : 1;
+      const f = count * STALK_FLOATS;
+      stalks[f] = slot.x + x; stalks[f + 1] = y; stalks[f + 2] = slot.z + z;
+      stalks[f + 3] = 7 + 8 * size;                                   // height
+      stalks[f + 4] = 0.035 + 0.04 * size + 0.0015 * (look >>> 29);  // radius
+      stalks[f + 5] = look >>> 8 & CULM_STRIPS - 1;
+      stalks[f + 6] = leanX * within; stalks[f + 7] = leanZ * within;
+      count++;
+    }
+  }
+  slot.squareStarts[(strip + 1) * across] = count;
+  slot.stalkCount = count;
+}
+
+// The chunk's clumps (see "Bamboo", above), like its stalks, but on CLUMP squares of the world, at
+// a random point in the middle 60% of each: the grove's thickness and the height there from the
+// chunk's own vertices, however far apart they are.
+function plantClumps(slot) {
+  const v = slot.vertices, clumps = slot.clumps, s = slot.spacing, squares = slot.size / CLUMP;
+  const S = VERTEX_SHORTS, next = CHUNK_VERTS * VERTEX_SHORTS;
+  let count = 0;
+  for (let j = 0; j < squares; j++) {
+    for (let i = 0; i < squares; i++) {
+      const where = hash(slot.cx * squares + i, slot.cz * squares + j, 160);
+      const x = (i + 0.2 + 0.6 * (where & 1023) / 1024) * CLUMP, z = (j + 0.2 + 0.6 * (where >>> 10 & 1023) / 1024) * CLUMP;
+      const gx = Math.min(Math.floor(x / s), CHUNK_QUADS - 1), gz = Math.min(Math.floor(z / s), CHUNK_QUADS - 1);
+      const fx = x / s - gx, fz = z / s - gz, o = (gz * CHUNK_VERTS + gx) * S;
+      // (The grove's byte, signed: -127 in the water, which grows nothing.)
+      const ga = Math.max(v[o + 3] >> 8, 0), gb = Math.max(v[o + S + 3] >> 8, 0);
+      const gc = Math.max(v[o + next + 3] >> 8, 0), gd = Math.max(v[o + next + S + 3] >> 8, 0);
+      const g0 = ga + (gb - ga) * fx, g1 = gc + (gd - gc) * fx;
+      if ((where >>> 20 & 1023) / 1024 * 127 >= g0 + (g1 - g0) * fz) continue;
+      const ea = v[o + 1], eb = v[o + S + 1], ec = v[o + next + 1], ed = v[o + next + S + 1];
+      if (ea + (eb - ea) * fx + (ec - ea) * fz + (ea - eb - ec + ed) * fx * fz < 100 * CLUMP / 2) continue;  // cm from the road
+      const a = v[o], b = v[o + S], c = v[o + next], d = v[o + next + S];
+      const y = 0.01 * (fx + fz <= 1 ? a + (b - a) * fx + (c - a) * fz : d - (d - c) * (1 - fx) - (d - b) * (1 - fz));
+      const look = hash(slot.cx * squares + i, slot.cz * squares + j, 161);
+      const f = count * CLUMP_FLOATS;
+      clumps[f] = slot.x + x; clumps[f + 1] = y; clumps[f + 2] = slot.z + z;
+      clumps[f + 3] = CLUMP_TALL + CLUMP_TALLER * (look & 255) / 255;
+      slot.clumpSquares[count] = i + j * squares;
+      count++;
+    }
+  }
+  slot.clumpCount = count;
+}
+
+// --- Building in a worker ---
+//
+// A whole chunk built in `slot` (newSlot's, of its level) at once: terrain-worker.js's way. And
+// handed to the main thread packed into one buffer (CHUNK_BYTES), transferred rather than copied,
+// which comes back with a later request to be packed into again: the chunk's vertices, water,
+// stalks and their squares, clumps and theirs, the road pieces near it (nearestRoad and
+// roadDistanceAt read them), how many of each, and its box (packChunk); unpackChunk puts it in the
+// main thread's slot.
+export const CHUNK_BYTES = 96 * 1024;  // a level-1 chunk's, the most: ~82 KB
+export function buildChunk(slot, cx, cz) {
+  slot.cx = cx; slot.cz = cz;
+  slot.x = cx * slot.size; slot.z = cz * slot.size;
+  slot.rowsBuilt = -1;
+  slot.ready = false;
+  while (!slot.ready) buildRow(slot);
+}
+// A built chunk's parts between `slot` and `bytes` (an ArrayBuffer): into it, if `out`, or out of it.
+// The 8-byte numbers first, then the 4-byte, then the 2-byte, so each starts on a multiple of its size.
+function copyChunk(slot, bytes, out) {
+  let at = 0;
+  const part = (array, count, View) => {
+    const view = new View(bytes, at, count);
+    if (out) view.set(array.subarray(0, count)); else array.set(view);
+    at += count * View.BYTES_PER_ELEMENT;
+  };
+  part(slot.roads.pieces, slot.roads.pieceCount * PIECE, Float64Array);
+  if (slot.stalks) part(slot.stalks, slot.stalkCount * STALK_FLOATS, Float32Array);
+  part(slot.clumps, slot.clumpCount * CLUMP_FLOATS, Float32Array);
+  part(slot.vertices, slot.vertices.length, Int16Array);
+  part(slot.water, slot.water.length, Int16Array);
+  if (slot.squareStarts) part(slot.squareStarts, slot.squareStarts.length, Uint16Array);
+  part(slot.clumpSquares, slot.clumpCount, Uint16Array);
+}
+export function packChunk(slot, bytes) {
+  copyChunk(slot, bytes, true);
+  return { level: slot.level, cx: slot.cx, cz: slot.cz, bytes, minY: slot.minY, maxY: slot.maxY, wet: slot.wet,
+    stalkCount: slot.stalkCount, clumpCount: slot.clumpCount, pieceCount: slot.roads.pieceCount, groupCount: slot.roads.groupCount };
+}
+function unpackChunk(slot, chunk) {
+  slot.minY = chunk.minY; slot.maxY = chunk.maxY; slot.wet = chunk.wet;
+  slot.stalkCount = chunk.stalkCount; slot.clumpCount = chunk.clumpCount;
+  slot.roads.pieceCount = chunk.pieceCount; slot.roads.groupCount = chunk.groupCount;
+  copyChunk(slot, chunk.bytes, false);
+  slot.rowsBuilt = slot.level < STALK_LEVELS ? BORDERED + slot.size / CLUMP : BORDERED;
+  slot.ready = true;
+  slot.version++;
+}
+
 // The land around the camera, built as it moves.
 //   draw: m: chunks within this are drawn (the fog's end).
 //   ahead: m: chunks are built this much before they're needed: beyond `draw`, and before each
@@ -964,10 +1225,12 @@ function edgeVertex(side, t) {
 //     100 m, 2 m within 220 m, 4 m beyond. Empty: 1 m squares throughout.
 //   radius: at most this many chunks of the coarsest level built each way from the camera's (the
 //     benches build a square of them).
+//   worker: a Worker running terrain-worker.js, to build the chunks off the main thread (see
+//     update); none: they're built here, a row at a time, within a budget each frame.
 // Each level keeps its chunks in a ring of n × n slots: chunk (cx, cz) always uses slot
 // (cx mod n, cz mod n), so when the camera moves on, the chunks it leaves behind free exactly the
 // slots the new ones need. n is enough for every chunk the level can want at once.
-export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius = Infinity } = {}) {
+export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius = Infinity, worker = null } = {}) {
   const top = detail.length;  // the coarsest level
   const levels = [], slots = [];
   for (let level = 0; level <= top; level++) {
@@ -979,48 +1242,29 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
     const scan = Math.min(radius, Math.ceil(reach / size));  // chunks each way to look through
     const n = Math.min(2 * scan + 1, Math.floor(2 * reach / size) + 2);
     levels.push({ spacing, size, n, scan, first: slots.length, finer: level > 0 ? detail[level - 1] : 0 });
-    for (let k = 0; k < n * n; k++) {
-      slots.push({
-        index: slots.length, level, spacing, size,
-        cx: 0, cz: 0,        // which chunk of its level it holds
-        x: 0, z: 0,          // world position of its first vertex
-        // Per vertex, 4 16-bit numbers: height in cm; cm from the road's edge, frayed (see
-        // buildRow); then as bytes, the ground's unit normal x, y, z, each × 127, and how thick the
-        // bamboo grows (grove, × 127). Then the skirts' vertices.
-        vertices: new Int16Array((VERTICES + SKIRT_VERTICES) * VERTEX_SHORTS),
-        // Heights in m, one row and column wider on each side than the chunk: the normals at its
-        // edges need the heights just beyond them.
-        heights: new Float32Array(BORDERED * BORDERED),
-        minY: 0, maxY: 0,    // the box it fits in (skirts included), for culling
-        rowsBuilt: -1,       // rows of `heights` done; -1: not started
-        ready: false,        // all its rows built
-        version: 0,          // goes up each time it's rebuilt, so main.js knows to re-upload it
-        roads: createRoadList(ROAD_PIECES),
-        // Near a river, its water's layer: per vertex, the water's height in cm and how deep it is
-        // there (cm; negative above it, and -1000 away from the river), for water.vert; and whether
-        // any of it is near a river (else it has none to draw).
-        water: new Int16Array(VERTICES * 2), wet: false,
-        // The first STALK_LEVELS levels': its bamboo (plantBamboo), STALK_FLOATS per stalk, a square
-        // after another, how many stalks, and where each square's start (and after the last, end).
-        stalks: level < STALK_LEVELS ? new Float32Array((size / PLANT) ** 2 * STALK_FLOATS) : null, stalkCount: 0,
-        squareStarts: level < STALK_LEVELS ? new Uint16Array((size / CLUMP) ** 2 + 1) : null,
-        // Every level's: its far bamboo (plantClumps), CLUMP_FLOATS per clump, how many, and each
-        // one's square.
-        clumps: new Float32Array((size / CLUMP) ** 2 * CLUMP_FLOATS), clumpCount: 0,
-        clumpSquares: new Uint16Array((size / CLUMP) ** 2),
-      });
-    }
+    for (let k = 0; k < n * n; k++) slots.push(newSlot(slots.length, level));
   }
 
-  // One grid square, two triangles: must match the vertex order in terrain.vert. Then the skirts,
-  // two triangles per edge square, wound to face out of the chunk.
+  // One grid square, two triangles: must match the vertex order in terrain.vert. The squares in
+  // strips STRIP wide, down one and back up the next, rather than row by row: a vertex is shared by
+  // the squares of its row and of the next, and the GPU shades it only once if it's still among the
+  // vertices it shaded last (its post-transform cache) when the next row comes to it, a strip's row
+  // being STRIP + 1 vertices and the chunk's 31. Through a cache of 16-48 vertices, ~1,080 vertex
+  // shader runs a chunk, not 1,860 (row by row, until 3 Oct 2026, the same from 64 up: 961, against
+  // 1,045-1,065 in strips; NOTES.md). Then the skirts, two triangles per edge square, wound to face out
+  // of the chunk: after all the squares, as before, so nothing that can meet them at the same depth
+  // changes order.
+  const STRIP = 6;
   const indices = new Uint16Array((CHUNK_QUADS * CHUNK_QUADS + 4 * CHUNK_QUADS) * 6);
   let i = 0;
-  for (let z = 0; z < CHUNK_QUADS; z++) {
-    for (let x = 0; x < CHUNK_QUADS; x++) {
-      const a = z * CHUNK_VERTS + x, b = a + 1, c = a + CHUNK_VERTS, d = c + 1;
-      indices[i++] = a; indices[i++] = c; indices[i++] = b;
-      indices[i++] = b; indices[i++] = c; indices[i++] = d;
+  for (let x0 = 0, back = false; x0 < CHUNK_QUADS; x0 += STRIP, back = !back) {
+    for (let k = 0; k < CHUNK_QUADS; k++) {
+      const z = back ? CHUNK_QUADS - 1 - k : k;
+      for (let x = x0; x < Math.min(x0 + STRIP, CHUNK_QUADS); x++) {
+        const a = z * CHUNK_VERTS + x, b = a + 1, c = a + CHUNK_VERTS, d = c + 1;
+        indices[i++] = a; indices[i++] = c; indices[i++] = b;
+        indices[i++] = b; indices[i++] = c; indices[i++] = d;
+      }
     }
   }
   for (let side = 0; side < 4; side++) {
@@ -1059,184 +1303,37 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
     slot.x = cx * slot.size; slot.z = cz * slot.size;
     slot.rowsBuilt = -1;
     slot.ready = false;
+    slot.pending = false;  // (whatever the worker sends back for its last chunk isn't wanted)
   }
 
-  const STRETCH = 11;  // vertices: a row of 33 is 3 stretches
-  const nearby = createRoadList(ROAD_PIECES);
-
-  // Build one row of a chunk's bordered heights (the first call also finds the roads near it).
-  // Rows inside the chunk also become vertices; and once the row after a vertex row is done,
-  // that row's normals can be worked out from the heights around each vertex. Then, at the levels
-  // that plant stalks, a row of its squares' stalks a call (a level-1 chunk plants 1,600 places:
-  // all at once, 0.2-0.3 ms past the building's budget); then it's ready.
-  function buildRow(slot) {
-    if (slot.rowsBuilt >= BORDERED) {
-      plantBamboo(slot, slot.rowsBuilt - BORDERED);
-      if (++slot.rowsBuilt === BORDERED + slot.size / CLUMP) finish(slot);
-      return;
-    }
-    const s = slot.spacing;
-    if (slot.rowsBuilt < 0) {
-      findRoads(slot.roads, slot.x - ROAD_REACH, slot.z - ROAD_REACH,
-        slot.x + slot.size + ROAD_REACH, slot.z + slot.size + ROAD_REACH);
-      slot.minY = Infinity; slot.maxY = -Infinity;
-      slot.wet = false;
-      slot.rowsBuilt = 0;
-    }
-    const row = slot.rowsBuilt, z = row - 1;  // z: vertex row, from -1 to CHUNK_VERTS
-    const v = slot.vertices, heights = slot.heights, wz = slot.z + z * s;
-    let far = false;
-    for (let x = -1; x <= CHUNK_VERTS; x++) {
-      const wx = slot.x + x * s;
-      // Only the roads that matter here, a stretch of the row at a time: most of the chunk's are
-      // too far from any one stretch to change it (a third of the time building, before).
-      // Where they're all too far to change anything, not even that.
-      if ((x + 1) % STRETCH === 0) far = nearbyRoads(slot.roads, nearby, wx + (STRETCH - 1) / 2 * s, wz, (STRETCH - 1) / 2 * s) >= FAR;
-      if (far) farFromRoads();
-      else roadDistance(nearby, wx, wz);
-      const river = riverDistance(wx, wz), land = landHeight(wx, wz, found[LAND_EDGE], found[LIFT], river);
-      const height = riverBed(wx, wz, land, river);
-      heights[row * BORDERED + x + 1] = height;
-      if (x < 0 || x >= CHUNK_VERTS || z < 0 || z >= CHUNK_VERTS) continue;  // the border
-      const cm = Math.min(Math.max(Math.round(height * 100), -32767), 32767);
-      const o = (z * CHUNK_VERTS + x) * VERTEX_SHORTS;
-      v[o] = cm;
-      // The road's edge for the shader to paint, frayed: in and out by up to about FRAY m, so the
-      // sand wanders into the grass. (Only near it: further out, nothing is painted by it.)
-      let edge = found[EDGE];
-      if (edge < 8) edge += FRAY * noise(wx / FRAY_WAVE, wz / FRAY_WAVE, 80);
-      // Where a river's banks cut a road away (under a bridge), no road is painted.
-      if (height < land - RIVER_CUT) edge = Math.max(edge, UNPAINTED);
-      v[o + 1] = Math.min(Math.max(Math.round(edge * 100), -32767), 32767);
-      // The grove; its normal's z joins it below. In the river and on its wet banks, instead, how
-      // much riverbed it is, negative: -127 under the water, fading to 0 up the bank.
-      const bed = 1 - smoothstep(RIVER_HALF + WET_FROM, RIVER_HALF + WET_TO, river);
-      v[o + 3] = (bed > 0 ? -Math.round(127 * bed) : Math.round(127 * grove(wx, wz, found[EDGE], river))) << 8;
-      // The water's layer.
-      const w = (z * CHUNK_VERTS + x) * 2;
-      if (river < RIVER_HALF + WATER_REACH) {
-        const water = waterLevel(wx, wz);
-        slot.water[w] = Math.min(Math.max(Math.round(water * 100), -32767), 32767);
-        slot.water[w + 1] = Math.min(Math.max(Math.round((water - height) * 100), -1000), 32767);
-        slot.wet = true;
-      } else {
-        slot.water[w] = cm; slot.water[w + 1] = -1000;
+  // With a worker: each frame, the chunks needed soonest are asked of it, IN_FLIGHT at most at a
+  // time (so what it's building is never far from what's wanted most); each comes back whole,
+  // between frames, into its slot, if the slot's still waiting for it. (A chunk ~0.5 ms there.)
+  const IN_FLIGHT = 4;
+  let inFlight = 0;
+  const spares = [];  // the buffers chunks came in, to go back with the next asks
+  if (worker) {
+    // (If it can't start or fails, everything's built here again, as without one.)
+    worker.onerror = () => {
+      worker = null;
+      inFlight = 0;
+      for (const slot of slots) slot.pending = false;
+    };
+    worker.onmessage = ({ data }) => {
+      inFlight--;
+      const slot = slotAt(data.level, data.cx, data.cz);
+      if (slot.pending && slot.cx === data.cx && slot.cz === data.cz) {
+        slot.pending = false;
+        if (!slot.ready) unpackChunk(slot, data);  // (ready: built here meanwhile, needed at once)
       }
-      slot.minY = Math.min(slot.minY, cm / 100);
-      slot.maxY = Math.max(slot.maxY, cm / 100);
-    }
-    if (z >= 1) {
-      // Normals of the vertex row before this one: the slope across each vertex, from the
-      // heights either side of it. Smooth: each is shared by the 6 triangles round the vertex.
-      const nz = z - 1, above = row * BORDERED, below = (row - 2) * BORDERED;
-      for (let x = 0; x < CHUNK_VERTS; x++) {
-        const slopeX = (heights[(row - 1) * BORDERED + x + 2] - heights[(row - 1) * BORDERED + x]) / (2 * s);
-        const slopeZ = (heights[above + x + 1] - heights[below + x + 1]) / (2 * s);
-        const scale = 127 / Math.sqrt(slopeX * slopeX + 1 + slopeZ * slopeZ);
-        const o = (nz * CHUNK_VERTS + x) * VERTEX_SHORTS;
-        v[o + 2] = Math.round(-slopeX * scale) & 255 | Math.round(scale) << 8;
-        v[o + 3] = v[o + 3] & 0xff00 | Math.round(-slopeZ * scale) & 255;  // beside the grove's byte
-      }
-    }
-    if (++slot.rowsBuilt === BORDERED) {
-      addSkirts(slot);
-      if (slot.level >= STALK_LEVELS) finish(slot);
-    }
+      spares.push(data.bytes);
+    };
   }
-  function finish(slot) {
-    plantClumps(slot);
-    slot.ready = true;
-    slot.version++;
-  }
-
-  // The skirts' vertices: the edge ones again, lower.
-  function addSkirts(slot) {
-    const v = slot.vertices, drop = SKIRT * slot.spacing;
-    for (let side = 0; side < 4; side++) {
-      for (let t = 0; t < CHUNK_VERTS; t++) {
-        const from = edgeVertex(side, t) * VERTEX_SHORTS, to = (VERTICES + side * CHUNK_VERTS + t) * VERTEX_SHORTS;
-        for (let k = 0; k < VERTEX_SHORTS; k++) v[to + k] = v[from + k];
-        v[to] = Math.max(v[from] - drop * 100, -32767);
-      }
-    }
-    slot.minY -= drop;
-  }
-
-  // The chunk's bamboo (see "Bamboo", above), in the squares of row `strip`: the road's edge at each
-  // stalk and the ground's height from its finished vertices (the height on the same triangles as
-  // heightAt), the grove afresh.
-  function plantBamboo(slot, strip) {
-    const v = slot.vertices, stalks = slot.stalks, s = slot.spacing, cells = slot.size / PLANT, across = slot.size / CLUMP;
-    const S = VERTEX_SHORTS, next = CHUNK_VERTS * VERTEX_SHORTS, perSquare = CLUMP / PLANT;
-    let count = strip === 0 ? 0 : slot.squareStarts[strip * across];
-    for (let q = strip * across; q < (strip + 1) * across; q++) {
-      slot.squareStarts[q] = count;
-      for (let k = 0; k < perSquare * perSquare; k++) {
-        const i = q % across * perSquare + k % perSquare, j = Math.floor(q / across) * perSquare + Math.floor(k / perSquare);
-        const where = hash(slot.cx * cells + i, slot.cz * cells + j, 150);
-        const x = (i + (where & 1023) / 1024) * PLANT, z = (j + (where >>> 10 & 1023) / 1024) * PLANT;
-        const gx = Math.min(Math.floor(x / s), CHUNK_QUADS - 1), gz = Math.min(Math.floor(z / s), CHUNK_QUADS - 1);
-        const fx = x / s - gx, fz = z / s - gz, o = (gz * CHUNK_VERTS + gx) * S;
-        const ea = v[o + 1], eb = v[o + S + 1], ec = v[o + next + 1], ed = v[o + next + S + 1];
-        const edge = 0.01 * (ea + (eb - ea) * fx + (ec - ea) * fz + (ea - eb - ec + ed) * fx * fz);
-        if ((where >>> 20 & 1023) / 1024 >= grove(slot.x + x, slot.z + z, edge)) continue;
-        const a = v[o], b = v[o + S], c = v[o + next], d = v[o + next + S];
-        const y = 0.01 * (fx + fz <= 1 ? a + (b - a) * fx + (c - a) * fz : d - (d - c) * (1 - fx) - (d - b) * (1 - fz));
-        const look = hash(slot.cx * cells + i, slot.cz * cells + j, 151), size = (look & 255) / 255;
-        // Leaning: a little any way, and out over the road, which is where the edge's distance falls.
-        let leanX = LEAN * ((look >>> 13 & 255) / 127.5 - 1), leanZ = LEAN * ((look >>> 21 & 255) / 127.5 - 1);
-        if (edge < LEAN_REACH) {
-          const slopeX = eb - ea + ed - ec, slopeZ = ec - ea + ed - eb, length = Math.sqrt(slopeX * slopeX + slopeZ * slopeZ);
-          if (length > 0) {
-            const out = LEAN_OUT * (1 - edge / LEAN_REACH) / length;
-            leanX -= slopeX * out; leanZ -= slopeZ * out;
-          }
-        }
-        const lean = Math.sqrt(leanX * leanX + leanZ * leanZ), within = lean > MAX_LEAN ? MAX_LEAN / lean : 1;
-        const f = count * STALK_FLOATS;
-        stalks[f] = slot.x + x; stalks[f + 1] = y; stalks[f + 2] = slot.z + z;
-        stalks[f + 3] = 7 + 8 * size;                                   // height
-        stalks[f + 4] = 0.035 + 0.04 * size + 0.0015 * (look >>> 29);  // radius
-        stalks[f + 5] = look >>> 8 & CULM_STRIPS - 1;
-        stalks[f + 6] = leanX * within; stalks[f + 7] = leanZ * within;
-        count++;
-      }
-    }
-    slot.squareStarts[(strip + 1) * across] = count;
-    slot.stalkCount = count;
-  }
-
-  // The chunk's clumps (see "Bamboo", above), like its stalks, but on CLUMP squares of the world, at
-  // a random point in the middle 60% of each: the grove's thickness and the height there from the
-  // chunk's own vertices, however far apart they are.
-  function plantClumps(slot) {
-    const v = slot.vertices, clumps = slot.clumps, s = slot.spacing, squares = slot.size / CLUMP;
-    const S = VERTEX_SHORTS, next = CHUNK_VERTS * VERTEX_SHORTS;
-    let count = 0;
-    for (let j = 0; j < squares; j++) {
-      for (let i = 0; i < squares; i++) {
-        const where = hash(slot.cx * squares + i, slot.cz * squares + j, 160);
-        const x = (i + 0.2 + 0.6 * (where & 1023) / 1024) * CLUMP, z = (j + 0.2 + 0.6 * (where >>> 10 & 1023) / 1024) * CLUMP;
-        const gx = Math.min(Math.floor(x / s), CHUNK_QUADS - 1), gz = Math.min(Math.floor(z / s), CHUNK_QUADS - 1);
-        const fx = x / s - gx, fz = z / s - gz, o = (gz * CHUNK_VERTS + gx) * S;
-        // (The grove's byte, signed: -127 in the water, which grows nothing.)
-        const ga = Math.max(v[o + 3] >> 8, 0), gb = Math.max(v[o + S + 3] >> 8, 0);
-        const gc = Math.max(v[o + next + 3] >> 8, 0), gd = Math.max(v[o + next + S + 3] >> 8, 0);
-        const g0 = ga + (gb - ga) * fx, g1 = gc + (gd - gc) * fx;
-        if ((where >>> 20 & 1023) / 1024 * 127 >= g0 + (g1 - g0) * fz) continue;
-        const ea = v[o + 1], eb = v[o + S + 1], ec = v[o + next + 1], ed = v[o + next + S + 1];
-        if (ea + (eb - ea) * fx + (ec - ea) * fz + (ea - eb - ec + ed) * fx * fz < 100 * CLUMP / 2) continue;  // cm from the road
-        const a = v[o], b = v[o + S], c = v[o + next], d = v[o + next + S];
-        const y = 0.01 * (fx + fz <= 1 ? a + (b - a) * fx + (c - a) * fz : d - (d - c) * (1 - fx) - (d - b) * (1 - fz));
-        const look = hash(slot.cx * squares + i, slot.cz * squares + j, 161);
-        const f = count * CLUMP_FLOATS;
-        clumps[f] = slot.x + x; clumps[f + 1] = y; clumps[f + 2] = slot.z + z;
-        clumps[f + 3] = CLUMP_TALL + CLUMP_TALLER * (look & 255) / 255;
-        slot.clumpSquares[count] = i + j * squares;
-        count++;
-      }
-    }
-    slot.clumpCount = count;
+  function ask(slot) {
+    slot.pending = true;
+    inFlight++;
+    const spare = spares.pop();
+    worker.postMessage({ level: slot.level, cx: slot.cx, cz: slot.cz, spare }, spare ? [spare] : []);
   }
 
   // The unbuilt chunk needed soonest, given a slot; or null if all are built. How soon a chunk is
@@ -1268,7 +1365,7 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
           }
           if (!(due < ahead && due < soonest)) continue;
           const slot = slots[row + column];
-          if (slot.ready && slot.cx === cx + dx && slot.cz === cz + dz) continue;  // built
+          if ((slot.ready || slot.pending) && slot.cx === cx + dx && slot.cz === cz + dz) continue;  // built, or being
           soonest = due; bestLevel = level; bestX = cx + dx; bestZ = cz + dz;
         }
       }
@@ -1347,21 +1444,29 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
   // browser or machine, or a low frame rate), up to CATCH_UP times the budget, until it's caught up:
   // the finer chunks carry the bamboo's stalks and the ground cover, which, late, would be seen
   // arriving (asked for, 3 Oct 2026: "objects load in dramatically around me").
+  //
+  // With a worker, none of that: the chunks due are asked of it (the budget unused, but for
+  // Infinity: everything built here and now, as at the start), and only the holes in view built here.
   const ROWS_PER_MS = 100, CATCH_UP = 3;
   let behind = 0;  // holes filled past the budget, last update
   function update(x, z, budget, needed = 0, planes = null) {
     findBridges(x, z);
     findTrees(x, z);
-    const start = performance.now();
-    let rows = 0, slot = null, limit = budget;
-    while (rows < limit * ROWS_PER_MS && performance.now() - start < limit) {
-      if (!slot || slot.ready) {
-        slot = mostDue(x, z);
-        if (!slot) break;  // all built
-        if (dueIn < ahead / 2) limit = budget * CATCH_UP;
+    let rows = 0;
+    if (worker && budget !== Infinity) {
+      for (let slot; inFlight < IN_FLIGHT && (slot = mostDue(x, z)); ) ask(slot);
+    } else {
+      const start = performance.now();
+      let slot = null, limit = budget;
+      while (rows < limit * ROWS_PER_MS && performance.now() - start < limit) {
+        if (!slot || slot.ready) {
+          slot = mostDue(x, z);
+          if (!slot) break;  // all built
+          if (dueIn < ahead / 2) limit = budget * CATCH_UP;
+        }
+        buildRow(slot);
+        rows++;
       }
-      buildRow(slot);
-      rows++;
     }
     behind = 0;
     view = planes;
@@ -1504,7 +1609,12 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
   // in a clearing: their crowns are wide), and on fairly level ground. One in CHERRY_ODDS groups is
   // cherries, one in MAPLE_ODDS maples in autumn red (both made by trees.js); the rest broadleaf
   // (the tree_01 model's). Found within TREE_REACH m of the camera (beyond the mist's end),
-  // again every TREE_REFRESH m it moves; each square worked out once, and kept while it's near.
+  // again every TREE_REFRESH m it moves; each square worked out once, and kept while it's near. The
+  // new squares a few a frame (GROUPS_A_CALL), the list changing once they're all done (all of them in
+  // one frame until 3 Oct 2026: ~37 squares, ~2.5 ms in Node, every couple of seconds, driving): the
+  // last ones, by then, are still past the mist's end. All at once, though, after a jump (the camera
+  // more than TREE_REFRESH m from where it was last time: the start, a tow), when the whole picture's
+  // new.
   // Each tree: where it stands (x, y, z), its kind ('cherry', 'maple' or 'broadleaf'), a number its shape
   // grows from (seed), and for a cherry or maple, the ground's height round it (ground: TREE_GROUND ×
   // TREE_GROUND points TREE_GROUND_STEP m apart, centred on it), for the petals or leaves fallen on it.
@@ -1515,8 +1625,10 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
   const CHERRY_GROVE = 0.15, BROADLEAF_GROVE = 0.5, TREE_CLEAR = 3.5;  // the thickest bamboo where each stands; m round a cherry
   const TREE_SLOPE = 1.2;  // m of rise across 4 m at most
   const TREE_GROUND = 11, TREE_GROUND_STEP = 1.5;  // (± 7.5 m: a cherry's petals reach 7)
-  const trees = [], treeCells = new Map();
-  let treesVersion = 0, treeX = NaN, treeZ = NaN;
+  const GROUPS_A_CALL = 3;
+  const trees = [], treeCells = new Map(), fresh = [];
+  const missing = new Int32Array(2 * 1024);  // squares (i, j) to work out
+  let treesVersion = 0, treeX = NaN, treeZ = NaN, lastX = NaN, lastZ = NaN, missingCount = 0, missingDone = 0;
   const treeRoads = createRoadList(ROAD_PIECES);
   // The land's height at (x, z), as buildRow works it out, from the roads in treeRoads; leaves
   // what roadDistance found there in `found`.
@@ -1577,27 +1689,46 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
     return group;
   }
   function findTrees(x, z) {
-    if (Math.hypot(x - treeX, z - treeZ) < TREE_REFRESH) return;
-    treeX = x; treeZ = z;
-    const i0 = Math.floor((x - TREE_REACH) / GROUP_CELL), i1 = Math.floor((x + TREE_REACH) / GROUP_CELL);
-    const j0 = Math.floor((z - TREE_REACH) / GROUP_CELL), j1 = Math.floor((z + TREE_REACH) / GROUP_CELL);
-    const fresh = [];
+    const jump = !(Math.hypot(x - lastX, z - lastZ) <= TREE_REFRESH);
+    lastX = x; lastZ = z;
+    if (jump || missingDone === missingCount) {
+      if (!jump && Math.hypot(x - treeX, z - treeZ) < TREE_REFRESH) return;
+      // A new refresh: the squares round here not worked out yet.
+      treeX = x; treeZ = z;
+      missingCount = missingDone = 0;
+      const i0 = Math.floor((x - TREE_REACH) / GROUP_CELL), i1 = Math.floor((x + TREE_REACH) / GROUP_CELL);
+      const j0 = Math.floor((z - TREE_REACH) / GROUP_CELL), j1 = Math.floor((z + TREE_REACH) / GROUP_CELL);
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          if (treeCells.has(i * 1e6 + j)) continue;
+          missing[2 * missingCount] = i; missing[2 * missingCount + 1] = j;
+          missingCount++;
+        }
+      }
+    }
+    for (let n = 0; missingDone < missingCount && (jump || n < GROUPS_A_CALL); n++, missingDone++) {
+      const i = missing[2 * missingDone], j = missing[2 * missingDone + 1];
+      if (!treeCells.has(i * 1e6 + j)) treeCells.set(i * 1e6 + j, groupIn(i, j));
+    }
+    if (missingDone < missingCount) return;
+    missingCount = missingDone = -1;  // (done: the next call starts a new refresh only once it's moved on)
+    // All there: the trees within reach of where the refresh began.
+    fresh.length = 0;
+    const i0 = Math.floor((treeX - TREE_REACH) / GROUP_CELL), i1 = Math.floor((treeX + TREE_REACH) / GROUP_CELL);
+    const j0 = Math.floor((treeZ - TREE_REACH) / GROUP_CELL), j1 = Math.floor((treeZ + TREE_REACH) / GROUP_CELL);
     for (let j = j0; j <= j1; j++) {
       for (let i = i0; i <= i1; i++) {
-        const key = i * 1e6 + j;
-        let group = treeCells.get(key);
-        if (group === undefined) treeCells.set(key, group = groupIn(i, j));
-        for (const tree of group) if (Math.hypot(tree.x - x, tree.z - z) < TREE_REACH) fresh.push(tree);
+        for (const tree of treeCells.get(i * 1e6 + j)) if (Math.hypot(tree.x - treeX, tree.z - treeZ) < TREE_REACH) fresh.push(tree);
       }
     }
     // Forget squares well behind.
     for (const key of treeCells.keys()) {
       const i = Math.round(key / 1e6), j = key - i * 1e6;
-      if (Math.abs((i + 0.5) * GROUP_CELL - x) > 2 * TREE_REACH || Math.abs((j + 0.5) * GROUP_CELL - z) > 2 * TREE_REACH) treeCells.delete(key);
+      if (Math.abs((i + 0.5) * GROUP_CELL - treeX) > 2 * TREE_REACH || Math.abs((j + 0.5) * GROUP_CELL - treeZ) > 2 * TREE_REACH) treeCells.delete(key);
     }
     if (fresh.length === trees.length && fresh.every((t, k) => t === trees[k])) return;
     trees.length = 0;
-    trees.push(...fresh);
+    for (const tree of fresh) trees.push(tree);
     treesVersion++;
   }
 

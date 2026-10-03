@@ -17,6 +17,7 @@ precision highp float;
 #include "sky.glsl"
 #include "dither.glsl"
 #include "near.glsl"
+#include "noise.glsl"
 
 in vec3 vWorldPos;
 in vec3 vNormal;
@@ -32,19 +33,6 @@ out vec4 color;
 const float TILE = 8.0;  // m: a card's u, v across the texture once
 const float FLOWERING_LAYER = 14.0;  // textures.js
 
-// Value noise, 0 to 1, on a 1 m lattice (as built.frag's).
-float lattice(ivec3 c) {
-  uint h = uint(c.x) * 1597334677u ^ uint(c.y) * 3812015801u ^ uint(c.z) * 2246822519u;
-  h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15;
-  return float(h & 1023u) / 1023.0;
-}
-float noise3(vec3 p) {
-  ivec3 c = ivec3(floor(p));
-  vec3 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(mix(lattice(c), lattice(c + ivec3(1, 0, 0)), f.x), mix(lattice(c + ivec3(0, 1, 0)), lattice(c + ivec3(1, 1, 0)), f.x), f.y),
-             mix(mix(lattice(c + ivec3(0, 0, 1)), lattice(c + ivec3(1, 0, 1)), f.x), mix(lattice(c + ivec3(0, 1, 1)), lattice(c + ivec3(1, 1, 1)), f.x), f.y), f.z);
-}
 const vec3 MOSS = vec3(0.13, 0.20, 0.06), MOSS_LIGHT = vec3(0.22, 0.29, 0.09);
 
 void main() {

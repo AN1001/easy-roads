@@ -21,8 +21,9 @@ const vec3 LEAF = vec3(0.18, 0.30, 0.09);   // leaves.vert's: the picture's colo
 
 void main() {
   int corner;  // 0-3: left and right at the bottom, then at the top
-  uvec2 entry = loadEntry(corner);
-  vec4 clump = texelFetch(uClumps, ivec2(int(entry.x & 1023u), int(entry.x >> 10)), 0);
+  ivec2 at;
+  uint entry = loadEntry(corner, at);
+  vec4 clump = texelFetch(uClumps, ivec2(int(entry & 1023u), int((entry & 0xfffffu) >> 10)), 0);
   float across = float(corner & 1) * 2.0 - 1.0, up = float(corner >> 1);
   float random = fract(dot(clump.xz, vec2(0.1031, 0.1377)) * 7.0);
   vec2 toCamera = normalize(uCamera.xz - clump.xz), side = vec2(-toCamera.y, toCamera.x);
