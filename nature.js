@@ -215,9 +215,10 @@ const STONE = [0.30, 0.29, 0.27];
 // A rock: a lumpy ball, `radii` m, its foot `buried` of its height in the ground, flattened
 // underneath; each vertex its own shade of grey. Each face lit partly flat (so it reads as stone,
 // faceted) and partly smooth.
-function rock(m, random, x, z, radii, buried, lumps = 0.35, shape = ball) {
+// (`flat` of its height below its middle, unless it's set in a slope.)
+function rock(m, random, x, z, radii, buried, lumps = 0.35, shape = ball, flat = 0.6) {
   const centre = [x, radii[1] * (1 - 2 * buried), z];
-  const points = lumpy(random, centre, radii, lumps, shape).map(p => [p[0], Math.max(p[1], centre[1] - radii[1] * 0.6), p[2]]);
+  const points = lumpy(random, centre, radii, lumps, shape).map(p => [p[0], Math.max(p[1], centre[1] - radii[1] * flat), p[2]]);
   const sub = (p, q) => [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
   // A face's normal, turned to point out of the rock.
   const faceNormal = ([a, b, c]) => {
@@ -270,11 +271,19 @@ const STONES = [1, 2].map(k => kind(80 + k, [0.7, 1.3], ROCK_FADE, 0, (m, r) => 
 }));
 const ROCKS = [1, 2, 3].map(k => kind(90 + k, [0.7, 1.3], ROCK_FADE, 0, (m, r) => rock(m, r, 0, 0, [0.45 + 0.1 * k, 0.32 + 0.05 * k, 0.4], 0.3, 0.3, ball.coarse)));
 const SLABS = [kind(100, [0.8, 1.3], ROCK_FADE, 0, (m, r) => rock(m, r, 0, 0, [0.9, 0.25, 0.65], 0.35, 0.25))];
+// Stones set in the rivers' banks (3 Oct 2026): two or three, half in the ground and not flattened
+// underneath, so they stick out of the slope; seen as far as the ferns (planted with the reeds).
+const BANK_STONES = [1, 2, 3].map(k => kind(120 + k, [0.8, 1.4], FERN_FADE, 0, (m, r) => {
+  for (let s = 0; s < 1 + k; s++) {
+    const a = r() * 6.28, d = s ? 0.3 + 0.3 * r() : 0, size = (s ? 0.16 : 0.3) + 0.1 * r();
+    rock(m, r, Math.cos(a) * d, Math.sin(a) * d, [size * 1.3, size * 0.8, size], 0.5, 0.35, ball.coarse, Infinity);
+  }
+}));
 export const BOULDER_RADIUS = 1.0;  // m, at size 1
 const BOULDERS = [1, 2].map(k => kind(110 + k, [0.9, 1.3], ROCK_FADE, 0, (m, r) => rock(m, r, 0, 0, [1.15, 0.85 + 0.15 * k, 1.0], 0.25, 0.3), BOULDER_RADIUS));
 // (The solid ones first: they hide some of the bushes.)
-export const KINDS = [...(GRASS ? [...TUFTS, ...TALL, ...FLOWERS] : []), ...REEDS, ...SEDGE, ...FERNS, ...STONES, ...ROCKS, ...SLABS, ...BOULDERS, ...BUSHES, ...IN_FLOWER];
-for (const [list, cell, level] of [[TUFTS, TUFT_CELL, 0], [TALL, TUFT_CELL, 0], [FLOWERS, TUFT_CELL, 0], [REEDS, BANK_CELL, 0], [SEDGE, BANK_CELL, 0], [FERNS, FERN_CELL, 0],
+export const KINDS = [...(GRASS ? [...TUFTS, ...TALL, ...FLOWERS] : []), ...REEDS, ...SEDGE, ...FERNS, ...STONES, ...BANK_STONES, ...ROCKS, ...SLABS, ...BOULDERS, ...BUSHES, ...IN_FLOWER];
+for (const [list, cell, level] of [[TUFTS, TUFT_CELL, 0], [TALL, TUFT_CELL, 0], [FLOWERS, TUFT_CELL, 0], [REEDS, BANK_CELL, 0], [SEDGE, BANK_CELL, 0], [BANK_STONES, BANK_CELL, 0], [FERNS, FERN_CELL, 0],
   [STONES, ROCK_CELL, 1], [ROCKS, ROCK_CELL, 1], [SLABS, ROCK_CELL, 1], [BOULDERS, ROCK_CELL, 1], [BUSHES, BUSH_CELL, 1], [IN_FLOWER, BUSH_CELL, 1]]) {
   for (const k of list) Object.assign(k, { cell, level });
 }
@@ -325,12 +334,18 @@ function grassy(a) {
 }
 // What grows on a river's bank, if anything (-1 nothing; the random numbers `r`, `t` choose):
 // reeds from 40 cm deep to 30 cm above the water, in beds (`patch`, 0 to 1, how thick they are
-// there); above them, up the wet bank, sedge. Not on the road or beside it.
+// there); above them, up the wet bank, sedge; and on the bank's steep face, wherever the water's
+// layer reaches (WATER_REACH: past the top of most), stones set in it, ferns and sedge hanging
+// from it. Not on the road or beside it.
 function banky(a, r, t, patch) {
-  if (a.edge < 2.5 || a.depth > 0.4 || a.grove >= 0 && a.depth < -1.2) return -1;
+  if (a.edge < 2.5 || a.depth > 0.4) return -1;
   if (a.depth > -0.3) return r < 0.65 * smoothstep(0.25, 0.6, patch) ? pick(REEDS, t) : -1;
   // (Not on the boulders standing out of the water: the riverbed's byte is all -1 there.)
-  return r < 0.35 && a.grove > -0.98 ? pick(SEDGE, t) : -1;
+  if (a.grove < -0.98) return -1;
+  if (a.depth > -10 && a.level < 0.8) {
+    return r < 0.16 ? pick(BANK_STONES, t) : r < 0.26 ? pick(FERNS, t) : r < 0.5 ? pick(SEDGE, t) : -1;
+  }
+  return (a.grove < 0 || a.depth > -1.2) && r < 0.35 ? pick(SEDGE, t) : -1;
 }
 const smoothstep = (from, to, x) => { const t = Math.min(Math.max((x - from) / (to - from), 0), 1); return t * t * (3 - 2 * t); };
 // How likely a fern: under the bamboo and along its edges, not on the verge; and up the rivers'

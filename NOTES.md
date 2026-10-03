@@ -207,6 +207,44 @@ The cube (`shaders/cube.*`) is no longer in the game, but `bench/frames.html` st
 
 ## Measurements
 
+### Lower banks at the bridges, stones and plants on the bank faces (3 Oct 2026)
+
+Asked for: the banks far too high in general, though smaller a little way from the bridges; and still
+bare, nothing on their sides. Why they were high: away from the roads the land sinks to the valley
+floor (`VALLEY`, 4 m below roadLevel) and the water is 1.5 m below that, so the banks were 1.5 m
+everywhere but at the roads. A road kept whatever lift it came with (its land's relief, smoothed over
+80 m and limited to a 6% grade, so one coming off a ridge couldn't get down in time), and the land
+beside it is held at its height for the verge (4.5-16.5 m) and only reaches the wild land's height 50 m
+further. So at every crossing the river was cut through a raised road: decks a median 5.7 m above the
+water (a tenth 18 m or more), the banks beside them 4.9 m (a tenth over 12 m), the same 15 m along the
+river, 4 m at 30 m, back to 1.5-1.7 m from 60 m. The scene a user sees from a road is all at the
+crossings.
+
+- **Roads come down to the rivers** (terrain.js `liftRoad`, `BRIDGE_HIGH`): wherever a road's corner is
+  within 15 m of the water's edge, its lift is no more than puts it 2 m above the water, rising from
+  there along the road at no more than 4.5% (into `dip`, by two passes along it, after the grade's
+  limit); then the grade's limit again from the ends, which aren't lowered (every road at a node must
+  agree). Measured along the road, not by riverDistance: tried first as a cap by riverDistance, which
+  is only right near a river (a kilometre off it changes by up to 6 m a metre), and the cap pulled a
+  road 1 km from any river down a 33% step (4 jumps in bench/physics.mjs's on-road drives, all at one
+  spot). Now: decks a median 2.8 m above the water (2.5-3.3), banks at the bridge 2.2 m (1.7-2.8),
+  2.1 m at 30 m along, 1.6 m at 60 m (the highest ground within 8 m of the water, lumps included). 125 of the points every 250 m on roads in 12 × 12 km moved, by a
+  median 3.2 m (a tenth by 17 m or more, most 35 m: those were banks across the valley floor); the
+  land 25 m beside them above the road: median 0.7 → 1.0 m, at most 6.7 → 8.9 m.
+- **On the bank faces** (nature.js `banky`): where the water's layer reaches (4 m past the edge) and the
+  ground is steep (normal's y under 0.8), on the 1.2 m squares: stones set in the bank (BANK_STONES,
+  new: 2-4 lumpy rocks, half buried and not flattened underneath, so they stand out of the slope;
+  faded as the ferns, level 0 only) 16%, ferns 10%, sedge 24%. Not on the big boulders in the water.
+- **Checked**: on the road (bench/physics.mjs) 40 min, 0 jumps, 0 tip-overs; every bridge in 12 × 12 km
+  driven both ways, 0 s in the air; no road vertex the river cuts is newly left without a deck over it
+  (487 aren't, the strip beside the narrower decks, as before); nothing grows on the bridges' roads
+  (bench/bridges.mjs); screenshots from three bridges and a bank, old and new. Chunks build in the
+  same time (0.73 ms; checksum now `3d2a1973e71c4c77`).
+- **Cost** (headless Chrome, Metal, 576 × 360, `?profile&step=60`, GPU p50): the ground cover from
+  bridges and a bank 1.5-1.6 → 1.9-2.3 ms (the views see more of the banks now, and ~30% more
+  triangles in a river chunk: 36k → 46k, ferns and the stones); the whole frame's GPU +0.3-0.7 ms. Not
+  measured in Zen.
+
 ### Livelier rivers: reflections, uneven banks and plants on them, arched bridges (3 Oct 2026)
 
 Asked for: the rivers looked bland; the user's guesses: (1) banks completely even, (2) bare banks,
@@ -3308,7 +3346,9 @@ packs; the low resolution and dither will pull them together, but check side by 
       timber bridges whose railings stop the car (see those notes).
 - [ ] **River improvements** (asked for 3 Oct 2026). Done the same day: uneven banks with a muddy
       shelf, reeds, sedge, ferns and bushes on them, bamboo leaning over the water, duckweed, foam and
-      bits of culm on it, reflections, arched bridges (see "Livelier rivers"). Still to choose from:
+      bits of culm on it, reflections, arched bridges (see "Livelier rivers"); roads down to the
+      water at the crossings, so the banks there are ~2 m not ~5, with stones, ferns and sedge on
+      their faces (see "Lower banks"). Still to choose from:
       - The water flowing: its waves, leaves and lily pads drifting downstream (it has no direction
         now: the waves only drift), faster where it's narrower.
       - Its level: level across, but it follows roadLevel along the river, so it slopes up to ~5% and

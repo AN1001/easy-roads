@@ -540,10 +540,37 @@ function liftRoad(last) {
     const most = LIFT_GRADE * (along[p + 1] - along[p]);
     lift[p] = Math.min(Math.max(lift[p], lift[p + 1] - most), lift[p + 1] + most);
   }
+  // Down to the rivers it crosses (see BRIDGE_HIGH): no higher than `dip` (after the grade's
+  // limit, which would hold a road coming off a ridge up, on a bank up to 20 m high across the
+  // valley floor). Not at its ends, where every road there must agree: then again no steeper than
+  // LIFT_GRADE from them (so a road crossing a river just past a high node crosses higher).
+  let near = false;
+  for (let p = 0; p <= last; p++) {
+    const crossing = p > 0 && p < last && riverDistance(curve[2 * p], curve[2 * p + 1]) < RIVER_HALF + RIVER_FLAT;
+    dip[p] = crossing ? BRIDGE_HIGH - VALLEY - RIVER_DROP : Infinity;
+    near ||= crossing;
+  }
+  if (near) {
+    for (let p = 1; p <= last; p++) dip[p] = Math.min(dip[p], dip[p - 1] + RIVER_GRADE * (along[p] - along[p - 1]));
+    for (let p = last - 1; p >= 0; p--) dip[p] = Math.min(dip[p], dip[p + 1] + RIVER_GRADE * (along[p + 1] - along[p]));
+    for (let p = 1; p < last; p++) lift[p] = Math.min(lift[p], dip[p]);
+    for (let p = 1; p <= last; p++) lift[p] = Math.max(lift[p], lift[p - 1] - LIFT_GRADE * (along[p] - along[p - 1]));
+    for (let p = last - 1; p > 0; p--) lift[p] = Math.max(lift[p], lift[p + 1] - LIFT_GRADE * (along[p + 1] - along[p]));
+  }
   smoothLift(last, 2);  // rounded over the tops and bottoms, where the limit left corners
 }
 // The lift the land asks for at (x, z).
 const landLift = (x, z) => follow(x, z) * relief(x, z);
+// A road crossing a river comes down the valley to cross it BRIDGE_HIGH m above the water: no
+// higher wherever it's within RIVER_FLAT m of the water's edge, and rising from there no steeper
+// than RIVER_GRADE along the road (into `dip`, per corner). Measured along the road, not by
+// riverDistance, which is only near the truth near a river: a mile off it can change by 6 m a metre.
+// Before (3 Oct 2026), the roads kept whatever lift they came with, smoothed over 80 m and
+// grade-limited, while the land beyond the verges sank to the valley floor, 1.5 m above the water:
+// the decks stood a median 5.7 m above it (a tenth over 18 m), and the banks beside them as high,
+// 1.5 m again 60 m along the river.
+const BRIDGE_HIGH = 2, RIVER_FLAT = 15, RIVER_GRADE = 0.045;  // m, m, -
+const dip = new Float64Array(2 * MAX_SPAN + 1);
 // Each corner's lift the average of those up to `reach` corners either side (fewer near the ends,
 // so the ends stay as they are). Keeps the unsmoothed ends in `lifted`.
 function smoothLift(last, reach) {
