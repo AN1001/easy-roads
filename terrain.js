@@ -967,6 +967,10 @@ export function newSlot(index, level) {
     // buildRow); then as bytes, the ground's unit normal x, y, z, each × 127, and how thick the
     // bamboo grows (grove, × 127). Then the skirts' vertices.
     vertices: new Int16Array((VERTICES + SKIRT_VERTICES) * VERTEX_SHORTS),
+    // Per vertex, cm from the road's edge, frayed, for placing things (plantBamboo, plantClumps,
+    // nature.js): the vertices' own, but not pushed out where a river cuts the road away (see
+    // buildRow), so nothing grows on a bridge's road, under its deck or beside it.
+    edges: new Int16Array(VERTICES),
     // Heights in m, one row and column wider on each side than the chunk: the normals at its
     // edges need the heights just beyond them.
     heights: new Float32Array(BORDERED * BORDERED),
@@ -1035,7 +1039,9 @@ function buildRow(slot) {
     // sand wanders into the grass. (Only near it: further out, nothing is painted by it.)
     let edge = found[EDGE];
     if (edge < 8) edge += FRAY * noise(wx / FRAY_WAVE, wz / FRAY_WAVE, 80);
-    // Where a river's banks cut a road away (under a bridge), no road is painted.
+    slot.edges[z * CHUNK_VERTS + x] = Math.min(Math.max(Math.round(edge * 100), -32767), 32767);
+    // Where a river's banks cut a road away (under a bridge), no road is painted. (But it's still
+    // the road for what's planted: `edges`.)
     if (height < land - RIVER_CUT) edge = Math.max(edge, UNPAINTED);
     v[o + 1] = Math.min(Math.max(Math.round(edge * 100), -32767), 32767);
     // The grove; its normal's z joins it below. In the river and on its wet banks, instead, how
@@ -1093,10 +1099,10 @@ function addSkirts(slot) {
 }
 
 // The chunk's bamboo (see "Bamboo", above), in the squares of row `strip`: the road's edge at each
-// stalk and the ground's height from its finished vertices (the height on the same triangles as
-// heightAt), the grove afresh.
+// stalk (`edges`) and the ground's height from its finished vertices (the height on the same
+// triangles as heightAt), the grove afresh.
 function plantBamboo(slot, strip) {
-  const v = slot.vertices, stalks = slot.stalks, s = slot.spacing, cells = slot.size / PLANT, across = slot.size / CLUMP;
+  const v = slot.vertices, e = slot.edges, stalks = slot.stalks, s = slot.spacing, cells = slot.size / PLANT, across = slot.size / CLUMP;
   const S = VERTEX_SHORTS, next = CHUNK_VERTS * VERTEX_SHORTS, perSquare = CLUMP / PLANT;
   let count = strip === 0 ? 0 : slot.squareStarts[strip * across];
   for (let q = strip * across; q < (strip + 1) * across; q++) {
@@ -1106,8 +1112,8 @@ function plantBamboo(slot, strip) {
       const where = hash(slot.cx * cells + i, slot.cz * cells + j, 150);
       const x = (i + (where & 1023) / 1024) * PLANT, z = (j + (where >>> 10 & 1023) / 1024) * PLANT;
       const gx = Math.min(Math.floor(x / s), CHUNK_QUADS - 1), gz = Math.min(Math.floor(z / s), CHUNK_QUADS - 1);
-      const fx = x / s - gx, fz = z / s - gz, o = (gz * CHUNK_VERTS + gx) * S;
-      const ea = v[o + 1], eb = v[o + S + 1], ec = v[o + next + 1], ed = v[o + next + S + 1];
+      const fx = x / s - gx, fz = z / s - gz, o = (gz * CHUNK_VERTS + gx) * S, p = gz * CHUNK_VERTS + gx;
+      const ea = e[p], eb = e[p + 1], ec = e[p + CHUNK_VERTS], ed = e[p + CHUNK_VERTS + 1];
       const edge = 0.01 * (ea + (eb - ea) * fx + (ec - ea) * fz + (ea - eb - ec + ed) * fx * fz);
       if ((where >>> 20 & 1023) / 1024 >= grove(slot.x + x, slot.z + z, edge)) continue;
       const a = v[o], b = v[o + S], c = v[o + next], d = v[o + next + S];
@@ -1140,7 +1146,7 @@ function plantBamboo(slot, strip) {
 // a random point in the middle 60% of each: the grove's thickness and the height there from the
 // chunk's own vertices, however far apart they are.
 function plantClumps(slot) {
-  const v = slot.vertices, clumps = slot.clumps, s = slot.spacing, squares = slot.size / CLUMP;
+  const v = slot.vertices, e = slot.edges, clumps = slot.clumps, s = slot.spacing, squares = slot.size / CLUMP;
   const S = VERTEX_SHORTS, next = CHUNK_VERTS * VERTEX_SHORTS;
   let count = 0;
   for (let j = 0; j < squares; j++) {
@@ -1154,7 +1160,7 @@ function plantClumps(slot) {
       const gc = Math.max(v[o + next + 3] >> 8, 0), gd = Math.max(v[o + next + S + 3] >> 8, 0);
       const g0 = ga + (gb - ga) * fx, g1 = gc + (gd - gc) * fx;
       if ((where >>> 20 & 1023) / 1024 * 127 >= g0 + (g1 - g0) * fz) continue;
-      const ea = v[o + 1], eb = v[o + S + 1], ec = v[o + next + 1], ed = v[o + next + S + 1];
+      const p = gz * CHUNK_VERTS + gx, ea = e[p], eb = e[p + 1], ec = e[p + CHUNK_VERTS], ed = e[p + CHUNK_VERTS + 1];
       if (ea + (eb - ea) * fx + (ec - ea) * fz + (ea - eb - ec + ed) * fx * fz < 100 * CLUMP / 2) continue;  // cm from the road
       const a = v[o], b = v[o + S], c = v[o + next], d = v[o + next + S];
       const y = 0.01 * (fx + fz <= 1 ? a + (b - a) * fx + (c - a) * fz : d - (d - c) * (1 - fx) - (d - b) * (1 - fz));
@@ -1199,6 +1205,7 @@ function copyChunk(slot, bytes, out) {
   part(slot.clumps, slot.clumpCount * CLUMP_FLOATS, Float32Array);
   part(slot.vertices, slot.vertices.length, Int16Array);
   part(slot.water, slot.water.length, Int16Array);
+  part(slot.edges, slot.edges.length, Int16Array);
   if (slot.squareStarts) part(slot.squareStarts, slot.squareStarts.length, Uint16Array);
   part(slot.clumpSquares, slot.clumpCount, Uint16Array);
 }

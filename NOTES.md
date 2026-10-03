@@ -207,6 +207,34 @@ The cube (`shaders/cube.*`) is no longer in the game, but `bench/frames.html` st
 
 ## Measurements
 
+### Nothing grows on the bridges' roads (3 Oct 2026)
+
+Asked for: rocks and bamboo (perhaps ferns and bushes too) growing on bridges and their approaches,
+blocking the road.
+
+- **Why**: where a river's banks cut a road away (under a bridge and beside it), buildRow pushes the
+  vertices' road edge out to UNPAINTED (8 m), so no sand is painted there. Everything planted read that
+  same number (plantBamboo, plantClumps, nature.js's `sample`), so on those vertices the road looked 8 m
+  away, and stalks (7-15 m tall: up through the deck), rocks, slabs and boulders (which stop the car)
+  grew on the road's line, under the deck and through it. Counted over the 69 bridges within a 12 ×
+  12 km square (`bench/bridges.mjs`; levels 0 and 1 counted separately, so most twice): 966 stalks, 4 clumps (+5 at level 2), 48 clusters of stones, 59
+  rocks, 18 slabs and 27 boulders within 0.5 m of the road or the deck (a boulder: within its radius
+  and half the car).
+- **Fix**: each chunk keeps a second copy of the road's edge per vertex, `slot.edges` (frayed, as
+  before, but never pushed out by a cut), and everything planted reads that; the vertices keep the
+  painted one, so where the road is painted doesn't change (the vertices' checksum the same,
+  `5237b7bd2fd6352c`). The bridge's road is then just a road to what's planted: nothing within 1 m of its
+  edge (bamboo), 1.5 m (rocks), 2.5 m (ferns, bushes), 3 m (clumps), 6 m (boulders). The decks are narrower
+  than the road and their sunk ends are on it, so all of them are clear. 1.9 KB more a chunk sent from the
+  worker (at most 72 KB of CHUNK_BYTES' 96). Trees already used the road's own distance.
+- **Checked**: after, nothing within those distances at any of the 69 bridges. Of 13,125 chunks over
+  3 km (levels 0-2), the only 19 whose bamboo, clumps or ground cover changed are ones a river cuts a road
+  in. Levels 0 and 1 near the bridges disagree on fewer places than before (244 against 300 of ~44,000:
+  what can come or go as a chunk gives way to its children), so nothing new pops. Screenshots (headless
+  Chrome, 576 × 360, `?step=60`, HOLD 90) at five bridges, from 25 m before each and from on three
+  decks, both ways: stalks stood up through the decks and across the far end before, none after; the
+  views facing away from the bridges identical to the pixel.
+
 ### Half the main thread's JS, a third of the draws: workers, indices, one draw for the land (3 Oct 2026)
 
 Asked for: optimise everything as far as it will go, CPU and GPU, for Zen on the Iris Plus 655 at
@@ -3219,6 +3247,17 @@ packs; the low resolution and dither will pull them together, but check side by 
 
 - [ ] **Postage stamps to collect across the map** (asked for 2 Oct 2026). Done so far: rivers, and
       timber bridges whose railings stop the car (see those notes).
+- [ ] **River improvements** (asked for 3 Oct 2026; not started). Ideas, to choose from:
+      - The water flowing: its waves, leaves and lily pads drifting downstream (it has no direction
+        now: the waves only drift), faster where it's narrower, foam round the boulders and piles.
+      - Its level: level across, but it follows roadLevel along the river, so it slopes up to ~5% and
+        can run uphill; falling only one way, with small rapids or weirs where it drops.
+      - Shape: every river is 12 m wide with the same banks; wider and narrower stretches, pools,
+        shingle beaches on the inside of bends, gentler banks in places, now and then a stream joining.
+      - Life on the banks: reeds went with the grass (GRASS off); a cheaper reed bed, ferns and
+        overhanging bamboo on the banks, mist lying lower over the water.
+      - Sound: running water as the car comes near, louder over a bridge.
+      - Crossings: a ford where a lane meets a shallow stretch, stepping stones, a stamp by the water.
 - [ ] **Map rework: a rainy bamboo forest at dusk.** See "Plan: the map rework" above; phases 1-4
       are done (bamboo, rain, sky: 29 Sep 2026), phase 5 (sound, lanterns) is left.
 - [x] **Splashes through puddles**, a particle effect of their own (asked for 28 Sep 2026, made 29
@@ -3367,6 +3406,10 @@ Ranked by the frame-budget measurements (biggest win for fullscreen ultrawide fi
   garbage is made. It plays the workers itself, between frames, untimed (their garbage counts, though).
   `node --cpu-prof bench/loop.mjs` for a CPU profile, and `node bench/cpuprofile.mjs file [frames]`
   to read it (self and total time a function, a frame).
+- **`bench/bridges.mjs`**: whether anything grows on the bridges' roads: stalks, clumps, ground cover
+  and boulders near each of the 69 bridges in a 12 × 12 km square, against the deck and the road's
+  edge (`node bench/bridges.mjs`, ~20 s; `VERBOSE=1` lists each one; another folder's terrain.js and
+  nature.js to compare).
 - **`bench/diff.mjs`**: how two screenshots differ: pixels, by how much, and where (`a.png b.png [where.png]`).
 - **Controls:** arrows or WASD drive; Space is the handbrake, R puts the car back on its wheels
   (it also happens by itself after 2 s stuck on its side or roof, or leaning over 60°), T tows it

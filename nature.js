@@ -285,7 +285,8 @@ function random(x, z, seed) {
 }
 
 // What the chunk's vertices say at (x, z) (m from its first vertex): the ground's height (on the
-// same triangles as the land's drawn), m from the road's edge, the grove's byte (/127: the bamboo's
+// same triangles as the land's drawn), m from the road's edge (its `edges`: where a river cuts the
+// road away under a bridge, still the road, though it isn't painted), the grove's byte (/127: the bamboo's
 // thickness, or, negative, how much riverbed), and the ground's normal's y (how level it is).
 const at = { height: 0, edge: 0, grove: 0, level: 0 };
 function sample(slot, x, z) {
@@ -294,8 +295,8 @@ function sample(slot, x, z) {
   const fx = x / s - gx, fz = z / s - gz, o = (gz * CHUNK_VERTS + gx) * S;
   const a = v[o], b = v[o + S], c = v[o + next], d = v[o + next + S];
   at.height = 0.01 * (fx + fz <= 1 ? a + (b - a) * fx + (c - a) * fz : d - (d - c) * (1 - fx) - (d - b) * (1 - fz));
-  const blend = k => { const p = v[o + k], q = v[o + S + k], r = v[o + next + k], t = v[o + next + S + k]; return p + (q - p) * fx + (r - p) * fz + (p - q - r + t) * fx * fz; };
-  at.edge = 0.01 * blend(1);
+  const e = slot.edges, p = gz * CHUNK_VERTS + gx, ea = e[p], eb = e[p + 1], ec = e[p + CHUNK_VERTS], ed = e[p + CHUNK_VERTS + 1];
+  at.edge = 0.01 * (ea + (eb - ea) * fx + (ec - ea) * fz + (ea - eb - ec + ed) * fx * fz);
   const g = k => v[k] >> 8;
   const ga = g(o + 3), gb = g(o + S + 3), gc = g(o + next + 3), gd = g(o + next + S + 3);
   at.grove = (ga + (gb - ga) * fx + (gc - ga) * fz + (ga - gb - gc + gd) * fx * fz) / 127;
