@@ -301,7 +301,11 @@ function random(x, z, seed) {
 // same triangles as the land's drawn), m from the road's edge (its `edges`: where a river cuts the
 // road away under a bridge, still the road, though it isn't painted), the grove's byte (/127: the bamboo's
 // thickness, or, negative, how much riverbed), and the ground's normal's y (how level it is).
-const at = { height: 0, edge: 0, grove: 0, level: 0, depth: 0 };
+const at = { height: 0, edge: 0, grove: 0, level: 0, depth: 0, shore: 0, shingle: 0 };
+const SHORE_UNDER = 0.6, SHINGLE_STEP = 0.35;  // m: as terrain.js's
+// How level the ground is at the vertex whose normal's x is the low byte of v[k] and z the low
+// byte of v[k + 1]: the normal's y, the rest of its length.
+const level = (v, k) => { const x = (v[k] << 24 >> 24) / 127, z = (v[k + 1] << 24 >> 24) / 127; return Math.sqrt(Math.max(1 - x * x - z * z, 0)); };
 function sample(slot, x, z) {
   const v = slot.vertices, s = slot.spacing, S = VERTEX_SHORTS, next = CHUNK_VERTS * S;
   const gx = Math.min(Math.floor(x / s), CHUNK_QUADS - 1), gz = Math.min(Math.floor(z / s), CHUNK_QUADS - 1);
@@ -313,7 +317,12 @@ function sample(slot, x, z) {
   const g = k => v[k] >> 8;
   const ga = g(o + 3), gb = g(o + S + 3), gc = g(o + next + 3), gd = g(o + next + S + 3);
   at.grove = (ga + (gb - ga) * fx + (gc - ga) * fz + (ga - gb - gc + gd) * fx * fz) / 127;
-  at.level = Math.min(v[o + 2] >> 8, v[o + S + 2] >> 8, v[o + next + 2] >> 8, v[o + next + S + 2] >> 8) / 127;
+  at.level = Math.min(level(v, o + 2), level(v, o + S + 2), level(v, o + next + 2), level(v, o + next + S + 2));
+  // The shore (terrain.js shoreByte), bilinear: m past the water's edge, and how wide its shingle.
+  const sa = (v[o + 2] >> 8) & 255, sb = (v[o + S + 2] >> 8) & 255, sc = (v[o + next + 2] >> 8) & 255, sd = (v[o + next + S + 2] >> 8) & 255;
+  const lerp = (a, b, c, d) => a + (b - a) * fx + (c - a) * fz + (a - b - c + d) * fx * fz;
+  at.shore = 0.1 * lerp(sa & 31, sb & 31, sc & 31, sd & 31) - SHORE_UNDER;
+  at.shingle = SHINGLE_STEP * lerp(sa >> 5, sb >> 5, sc >> 5, sd >> 5);
   // How deep the water is (m; negative above it), from the water's layer (terrain.js: slot.water),
   // where all four corners have it; else -10 (far above any).
   const w = slot.water, wa = w[2 * p + 1], wb = w[2 * p + 3], wc = w[2 * (p + CHUNK_VERTS) + 1], wd = w[2 * (p + CHUNK_VERTS) + 3];
@@ -334,14 +343,21 @@ function grassy(a) {
 }
 // What grows on a river's bank, if anything (-1 nothing; the random numbers `r`, `t` choose):
 // reeds from 40 cm deep to 30 cm above the water, in beds (`patch`, 0 to 1, how thick they are
-// there); above them, up the wet bank, sedge; and on the bank's steep face, wherever the water's
-// layer reaches (WATER_REACH: past the top of most), stones set in it, ferns and sedge hanging
-// from it. Not on the road or beside it.
+// there); above them, up the wet bank, sedge; and on the bank's face, wherever the water's layer
+// reaches (WATER_REACH: past the top of most), stones set in it, ferns and sedge hanging from it.
+// By the river's stretch (terrain.js shoreByte: how wide its shingle): where it's reedy (none), the
+// reeds thicker and in more of it; where it's stony (a beach of 1 m or more), few reeds, and on the
+// beach only stones. Not on the road or beside it.
 function banky(a, r, t, patch) {
   if (a.edge < 2.5 || a.depth > 0.4) return -1;
-  if (a.depth > -0.3) return r < 0.65 * smoothstep(0.25, 0.6, patch) ? pick(REEDS, t) : -1;
+  const reedy = a.shingle < 0.2, stony = a.shingle > 1;
+  if (a.depth > -0.3) {
+    const reeds = reedy ? 0.8 * smoothstep(0.05, 0.4, patch) : stony ? 0.2 * smoothstep(0.4, 0.7, patch) : 0.65 * smoothstep(0.25, 0.6, patch);
+    return r < reeds ? pick(REEDS, t) : -1;
+  }
   // (Not on the boulders standing out of the water: the riverbed's byte is all -1 there.)
   if (a.grove < -0.98) return -1;
+  if (stony && a.shore < a.shingle) return r < 0.3 ? pick(BANK_STONES, t) : -1;
   if (a.depth > -10 && a.level < 0.92) {
     return r < 0.16 ? pick(BANK_STONES, t) : r < 0.26 ? pick(FERNS, t) : r < 0.5 ? pick(SEDGE, t) : -1;
   }

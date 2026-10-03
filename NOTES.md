@@ -207,6 +207,34 @@ The cube (`shaders/cube.*`) is no longer in the game, but `bench/frames.html` st
 
 ## Measurements
 
+### Shingle, a wet line, and stretches along the rivers (3 Oct 2026)
+
+Asked for: the banks' shape good, their detail still inadequate. From the photos of Japanese river
+bridges (see "Gentle, low banks"), suggested and asked for 1-3 of: (1) a band of pale rounded stones
+along the water, a beach on the inside of bends; (2) a dark, mossy wet line just above the water; (3)
+the river in stretches, grassy, stony or reedy, every few tens of metres; (4) tall grass leaning over
+the water, (5) stone-faced banks at the bridges, (6) driftwood, leaning trees, steps: left for later
+(the user expects the grass, 4, to matter most).
+
+- **A byte for the shore** (terrain.js `shoreByte`): the vertex had no room, so the normal's y is no
+  longer kept (terrain.vert and nature.js work it out from x and z: the ground never faces down), and
+  its byte holds, by a river, how far past the water's (wandering) edge the vertex is (5 bits, -0.6 to
+  2.5 m by tenths) and how wide a band of shingle runs along the water there (3 bits, by 0.35 m). The
+  width is the stretch's (noise at 45 m: reedy, none; grassy, 0.35-0.7 m; stony, 1-2.45 m), and on a
+  stony or grassy stretch wider on the inside of a bend (riverDistance's curvature over 16 m, from 1/500
+  to 1/125 m, up to 1.4 m more).
+- **terrain.frag**: the shingle, the bank's texture laid flat at a third of its scale in pale grey,
+  its edge pushed in and out by the stones (±0.25 m) and over a few metres (±1.2 m: a narrow band comes
+  and goes in patches; at a constant width it read as a kerb), on into the shallows; above it no
+  riverbed, so grass comes down to the stones (or the water, on a reedy stretch: before, 0.5-2.5 m of
+  silt texture everywhere). The wet line: up to 0.45 m past the water, darker, mossy, a little shine.
+- **nature.js `banky`** by stretch: reedy, reeds thicker and in more of it (0.8, from a patch of 0.05);
+  stony, few reeds (0.2) and on the beach only the bank's stones (0.3 of its squares); grassy as before.
+- **Checked**: chunks build in the same time (0.71 ms; checksum `3d6ea91a84bbc91c`); bench/loop.mjs JS
+  0.23 ms a frame p50; on the road 40 min, 0 jumps; nothing on the bridges' roads; screenshots at two
+  bridges, a bank and a stony stretch. GPU (`?profile&step=60`, 576 × 360): terrain +0.02-0.03 ms by
+  rivers, the rest within the noise.
+
 ### Roads cross the rivers at the valley floor: the banks at a bridge as low as anywhere (3 Oct 2026)
 
 Asked for: the banks just along the river from a bridge nearly flat (ideal), but high at the bridge;
@@ -3392,7 +3420,10 @@ packs; the low resolution and dither will pull them together, but check side by 
       bits of culm on it, reflections, arched bridges (see "Livelier rivers"); roads down to the
       water at the crossings, with stones, ferns and sedge on the banks (see "Lower banks"), and the
       banks gentle and low, as in photos of Japanese bridges (see "Gentle, low banks"), as low at
-      the bridges as anywhere (see "Roads cross the rivers at the valley floor"). Still to
+      the bridges as anywhere (see "Roads cross the rivers at the valley floor"); shingle, a wet
+      line, and grassy, stony and reedy stretches (see "Shingle, a wet line"). Next: tall grass
+      leaning over the water (the user's pick); then stone-faced banks by the bridges, driftwood,
+      leaning trees with their roots showing, steps down to the water. Still to
       choose from:
       - The water flowing: its waves, leaves and lily pads drifting downstream (it has no direction
         now: the waves only drift), faster where it's narrower.

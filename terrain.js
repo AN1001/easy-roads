@@ -3,8 +3,8 @@
 // waits long.
 //
 // Each vertex is 8 bytes: its height, how far it is from the road's edge (for the shader to paint
-// the road), the ground's normal there (for smooth lighting), and how thick the bamboo grows (to
-// shade the ground under it). The vertex shader works out x/z from the vertex's index, so the grid
+// the road), the ground's normal there (for smooth lighting: its x and z, y worked out from them),
+// how thick the bamboo grows (to shade the ground under it) and, by a river, its shore (shoreByte). The vertex shader works out x/z from the vertex's index, so the grid
 // itself costs no memory. Level 0's chunks also plant the bamboo (bamboo.js draws it).
 
 import { boxInFrustum } from './math.js';
@@ -864,6 +864,29 @@ const waterLevel = (x, z) => roadLevel(x, z) - VALLEY - RIVER_DROP;
 // out from the edge a point is, as the banks' wet earth goes (buildRow).
 const bankIn = (x, z) => BANK_IN * Math.max(0.5 + 0.5 * noise(x / BANK_IN_WAVE, z / BANK_IN_WAVE, 190), 0);
 // The bank's height at (x, z), `river` m from the river's middle, the water at `water`.
+// The river's shore at (x, z), `river` m from its middle, as a byte for the vertex (with the
+// normal's x: buildRow), for terrain.frag to paint and nature.js to plant by: its low 5 bits how far
+// past the water's edge (as it wanders: bankIn) it is, -0.6 to 2.5 m by tenths (SHORE_UNDER, under
+// the water, and SHORE_REACH and beyond away from it); its high 3 how wide a band of shingle runs
+// along the water there, by SHINGLE_STEP m (0 to 2.45). The river goes in stretches (noise at
+// STRETCH_WAVE m along it), and each kind of stretch has its own shingle: reedy, none (0: the reeds
+// grow right to the water: nature.js); grassy, a narrow band of stones under the grass's edge (1-2);
+// stony, a broad beach (3-7). And on the inside of a bend, where a river drops its gravel, wider
+// (the curvature from how fast riverDistance's slope changes, over SHORE_BEND m: ~1/r m on the
+// inside, -1/r on the outside).
+const SHORE_UNDER = 0.6, SHORE_REACH = 2.5, SHINGLE_STEP = 0.35, STRETCH_WAVE = 45, SHORE_BEND = 16;  // m
+const SHORE_NONE = 31;  // the byte where there's no river near
+function shoreByte(x, z, river) {
+  if (river > RIVER_HALF + SHORE_REACH + BANK_IN) return SHORE_NONE;
+  const past = river + bankIn(x, z) - RIVER_HALF;
+  const d = Math.min(Math.max(Math.round((past + SHORE_UNDER) * 10), 0), 31);
+  const stretch = noise(x / STRETCH_WAVE, z / STRETCH_WAVE, 194);
+  const h = SHORE_BEND, bend = -(riverDistance(x + h, z) + riverDistance(x - h, z) + riverDistance(x, z + h) + riverDistance(x, z - h) - 4 * river) / (h * h);
+  riverAcross(x, z);  // (back to this square's corners, for the next vertex)
+  let width = stretch < -0.3 ? 0 : stretch < 0.2 ? 1 + smoothstep(-0.3, 0.2, stretch) : 3 + 4 * smoothstep(0.2, 0.6, stretch);
+  if (width > 0) width += 4 * smoothstep(0.002, 0.008, bend);
+  return Math.min(Math.round(width), 7) << 5 | d;
+}
 function bankHeight(x, z, river, water) {
   const wandered = bankIn(x, z), out = river - RIVER_HALF + wandered, shelf = SHELF_OUT * wandered;
   const steep = RIVER_BANK + BANK_STEEPER * Math.max(0.5 + 0.5 * noise(x / BANK_STEEP_WAVE, z / BANK_STEEP_WAVE, 191), 0);
@@ -1033,8 +1056,9 @@ export function newSlot(index, level) {
     cx: 0, cz: 0,        // which chunk of its level it holds
     x: 0, z: 0,          // world position of its first vertex
     // Per vertex, 4 16-bit numbers: height in cm; cm from the road's edge, frayed (see
-    // buildRow); then as bytes, the ground's unit normal x, y, z, each × 127, and how thick the
-    // bamboo grows (grove, × 127). Then the skirts' vertices.
+    // buildRow); then as bytes, the ground's unit normal's x × 127, the river's shore (shoreByte),
+    // the normal's z × 127 (its y is the rest of its length: the ground never faces down), and how
+    // thick the bamboo grows (grove, × 127). Then the skirts' vertices.
     vertices: new Int16Array((VERTICES + SKIRT_VERTICES) * VERTEX_SHORTS),
     // Per vertex, cm from the road's edge, frayed, for placing things (plantBamboo, plantClumps,
     // nature.js): the vertices' own, but not pushed out where a river cuts the road away (see
@@ -1104,6 +1128,7 @@ function buildRow(slot) {
     const cm = Math.min(Math.max(Math.round(height * 100), -32767), 32767);
     const o = (z * CHUNK_VERTS + x) * VERTEX_SHORTS;
     v[o] = cm;
+    v[o + 2] = shoreByte(wx, wz, river) << 8;  // (the normal's x joins it below)
     // The road's edge for the shader to paint, frayed: in and out by up to about FRAY m, so the
     // sand wanders into the grass. (Only near it: further out, nothing is painted by it.)
     let edge = found[EDGE];
@@ -1139,7 +1164,7 @@ function buildRow(slot) {
       const slopeZ = (heights[above + x + 1] - heights[below + x + 1]) / (2 * s);
       const scale = 127 / Math.sqrt(slopeX * slopeX + 1 + slopeZ * slopeZ);
       const o = (nz * CHUNK_VERTS + x) * VERTEX_SHORTS;
-      v[o + 2] = Math.round(-slopeX * scale) & 255 | Math.round(scale) << 8;
+      v[o + 2] = v[o + 2] & 0xff00 | Math.round(-slopeX * scale) & 255;  // beside the shore's byte
       v[o + 3] = v[o + 3] & 0xff00 | Math.round(-slopeZ * scale) & 255;  // beside the grove's byte
     }
   }
