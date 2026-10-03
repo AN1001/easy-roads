@@ -22,6 +22,6 @@ void main() {
 
   // A puff is lit from all round, and scatters the light towards the camera, so it shows against
   // the ground it came from: the sky as if facing up, and the headlight as if facing it.
-  vec3 light = dusk(vec3(0.0, 1.0, 0.0)) + LAMP_COLOR * headlight(vWorldPos, normalize(uLamp.xyz - vWorldPos));
+  vec3 light = daylight(vec3(0.0, 1.0, 0.0)) + LAMP_COLOR * headlight(vWorldPos, normalize(uLamp.xyz - vWorldPos));
   color = vec4(dither(mix(vColor * light, mistColor(vWorldPos), mist(vWorldPos))), 1.0);
 }

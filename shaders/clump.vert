@@ -2,7 +2,7 @@
 // A clump of bamboo, far off (bamboo.js): one card, turned to face the camera, standing at the
 // clump's foot (terrain.js, plantClumps) as tall as the clump, with a picture of a clump of stalks
 // and their leaves (textures.js): one of two, either way round. Its top sways with the gusts, as
-// the stalks' do. Lit by the dusk alone (the headlight doesn't reach this far), and misted at its
+// the stalks' do. Lit by the daylight alone (the headlight doesn't reach this far), and misted at its
 // corners: across a card this far off, the mist barely changes.
 
 #include "frame.glsl"
@@ -32,7 +32,7 @@ void main() {
   float picture = random < 0.5 ? 0.25 : 0.75, flip = fract(2.0 * random) < 0.5 ? -0.25 : 0.25;
   vUV = vec2(picture + flip * across, up);
   float misted = mist(pos);
-  vScale = LEAF * 2.0 * dusk(vec3(0.0, 1.0, 0.0)) * (1.0 - misted);
+  vScale = LEAF * 2.0 * daylight(vec3(0.0, 1.0, 0.0)) * (1.0 - misted);
   vAdd = mistColor(pos) * misted;
   int shift = int(random * 16.0);
   vShift = ivec2(shift & 3, shift >> 2);

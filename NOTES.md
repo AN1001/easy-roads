@@ -35,7 +35,7 @@ textures, skyboxes and billboards for distant things, low resolution, and strict
 polygon/texture budgets. Their low-level tricks mostly worked around tiny memory
 (PS2: 32 MB RAM, 4 MB VRAM), which this machine doesn't have.
 
-## The look: PS1, a rainy dusk in a bamboo forest (night until 28 Sep 2026)
+## The look: PS1, a rainy night in a bamboo forest (night until 28 Sep 2026, dusk until 1 Oct 2026)
 
 Misty, pixelated, low-poly. What makes it, and where it lives:
 
@@ -48,15 +48,19 @@ Misty, pixelated, low-poly. What makes it, and where it lives:
 | **Dusk light** | Overcast: a blue-grey sky from above, a dim green bounce from the forest below, a little afterglow from the west; the warm headlight cone as before (full within ~18°, gone past ~32°, half brightness at 15 m). No moon | `dusk()` and `headlight()` in `sky.glsl`, lamp position in `main.js` |
 | **Forest country** | Endless and procedural, smooth-shaded: rolling hills, long rounded ridges (20–60 m above the shallow valleys) and smaller spurs off them; nothing steeper than ~55°. Bamboo in groves, thick over about two fifths of the land, with clearings over about a fifth; the ground darker under it. The lanes rise and fall with the land (in some places following the hills closely, in others keeping lower and flatter), so they climb over crests and dip into hollows rather than running along canyon floors. Far off (80–150 m), past the bamboo that's drawn, the groves are tinted as its tops. A network of dirt lanes: main ones 6.5 m wide, the rest 5.5 m (6 and 5 until 30 Sep 2026, then 8 and 7 for a day), east-west, north-south and diagonal; junctions rare (every ~2.2 km of road): T, Y and crossroads. No roundabouts. The lanes wind gently between junctions (the rally stages of 29-30 Sep 2026, with tight corners and crests to jump, were reverted on 30 Sep) | `terrain.js`, `terrain.frag` |
 | **Bamboo** | Stalks 7–15 m tall and 7–16 cm across, planted on a 1.5 m grid by how thick the grove is, none within 1 m of a lane and thinner up to 5 m from it; leaning a little, and out over the lanes. Green to yellowish, ringed at the nodes (every 31–44 cm: a pale ridge, the sheath's dark scar, a whitish band of wax), some with lichen; wet, so their edges shine. Leaves from 45% of the way up: sprays of narrow leaves drooping from twigs, see-through between them by the dither. A breeze sways them, gusts sweeping across the groves; the car and the camera push them aside rather than hitting them, and those the car pushed spring back up slowly (half way in 1 s, 90% in 2 s). Near (within 26–34 m, each at its own distance, dissolving from one to the other over 4 m): 5-sided tubes, 3 crossed leaf cards; further: 1-pixel lines, one card facing the camera with a picture of the crossed cards on it ("strands"); from 180–200 m (each 6 m square at its own distance, its stalks dissolving into its clump over 20 m, in 75-80% mist) to the mist's end at 400 m, clumps: one card facing the camera for each 6 m square where bamboo grows (and more than 3 m from a lane), a picture of a clump of stalks and leaves | `terrain.js` (`grove`, `plantBamboo`, `plantClumps`), `bamboo.js`, `bamboo.glsl`, `stalk.*`, `leaves.*`, `clump.*`, `textures.js` |
-| **Rain** | 5,000 streaks, each the line a drop falls in 1/25 s, in a 40 × 20 × 40 m box round the camera that they wrap round: fixed in the world, so driving passes through them. Pale, see-through by the dither, bright in the headlight. On the ground round the car, drops splash up in pairs of tiny droplets (160 a second); on the puddles, rings spread | `rain.*`, `particles.js` (`rainOnGround`), `ripple` in `terrain.frag` |
+| **Rain** | 5,000 streaks, each the line a drop falls in 1/25 s, in a 40 × 20 × 40 m box round the camera that they wrap round: fixed in the world, so driving passes through them. Pale, see-through by the dither; not lit by the headlight (1 Oct 2026: at night the drops crossing its beam flickered). On the puddles, rings spread (the droplets splashing up round the car, 160 a second, were taken out on 1 Oct 2026: they flickered in the headlight) | `rain.*`, `particles.js` (`rainOnGround`), `ripple` in `terrain.frag` |
 | **Sandy dirt roads** | Pale damp sand, darker where it's wetter, with a few puddles (one wettest patch in ten: ~0.5% of it, about one every 200 m; a tenth of it until 29 Sep 2026) that reflect the sky (its colour the way the reflection looks), a third looking down into them and almost all of it at a glancing angle (Fresnel), so the lane shines further off; wet sand does too, much less. Far off, a puddle fades into a glint (its texture's mipmaps: the share of a pixel it covers). The rain rings them: in each half-metre square a drop lands about once a second, and a ring spreads and fades, turning the reflection round (bright rings on a dark puddle up close, dark on a shining one further off). The edge frays into grass: wandering ±0.5 m (noise, baked into the vertex), blended over 0.8 m and pushed in and out by the grass's tufts; then grass to forest floor 2.5–3.5 m out. No markings | `terrain.js` (`FRAY`), `terrain.frag`, `textures.js` |
 | **Textures** | Nine layers of 128 × 128, made in code at startup. The ground's four are tiles at 8 texels per metre (16 m across): the bank (earth with stones bedded in it, lit on top and shadowed below, runs of wet and moss) hangs on slopes with its rows level; the floor has fallen leaves 2-3 texels long, dry and pale or dark and wet, and moss; grass is clumps of blades, with tufts in its alpha; sand has grit and pebbles, and how wet it is in its alpha. The bamboo's culm: 32 strips, each 4 texels round and 4 m up at 32 per metre. Its leaves: one card, the stalk up the middle; and for far stalks, a picture of three such cards crossed at 60°, seen from the side (as thick with leaves as a near stalk's). The far clumps: two pictures side by side, each 7 stalks and their leaves (as thick as a far stalk's). The clouds: their thickness in the alpha. `NEAREST` up close, mipmaps in the distance | `textures.js`, the shaders |
 | **Dust, smoke and water** | Faint: earth off the road from the tyres (more from the driven back wheels, more sliding), a ring of it on a hard landing (sand, on the road), smoke from tyres sliding on the road (sand 29-30 Sep 2026, reverted), a little exhaust. Round puffs, see-through by the dither pattern (no blending), lit by the sky, the headlight and red by the tail lights. Through a puddle, water: drops thrown up and out, more the faster (a bow wave to the sides from the front tyres, up and behind from the back ones), falling back down; found where the puddles are drawn, from the puddles' texture's own texels | `particles.js`, `particles.*` shaders |
 | No antialiasing, flat shading | | already in place |
 | **Textured low-poly car** | "Car 03" from GGBotNet's PSX Style Cars (CC0): 336-triangle body + 4 × 28-triangle wheels, `NEAREST`, no mipmaps. Its texture is two of the model's 128 × 128 side by side (256 × 128): the faces left of the middle (+x) read the second, so the sides, and the halves of the roof, bonnet, back and front, each have their own texels (the model's left is its right mirrored) | `car.js` (`parseBody`), `obj.js`, `loadTexture` in `gl.js`, `car.frag` |
-| **Green car** (rally livery 29-30 Sep 2026, then back) | The model's own dark green paint (`car3_zen.png`, `bench/livery.mjs --zen`: `car3.png` twice over, as the body's texture is laid out), with one thing from the rally days: an upright brake light in the middle of the back bumper, with a fleck of mud on it. No spoiler | `bench/livery.mjs`, `assets/Car 03/` |
+| **Green car** (rally livery 29-30 Sep 2026, then back) | The model's own dark green paint (`car3_zen.png`, `bench/livery.mjs --zen`: `car3.png` twice over, as the body's texture is laid out). No spoiler; the upright brake light in the middle of the back bumper (from the rally days) gone 1 Oct 2026 | `bench/livery.mjs`, `assets/Car 03/` |
 | **Bouncy physics** | A rigid body on four sprung wheels (1.6 bounces a second, damping ratio 0.45): it bobs over bumps, leans ~4° in corners, dives ~2.5° braking, flies off crests and lands on its springs. Each wheel spins at its own speed and hangs down in the air; the front two steer (±29°, less at speed) | `physics.js`, `car.js`, wheel matrices in `main.js` |
-| **Glowing tail lights** | The texture's pure reds (green and blue exactly 0) are drawn unlit: always on at their own red (1×; 0.6× until 29 Sep 2026, when they read as unlit), three times as bright braking, where the red past full burns towards orange-white (their brightest parts; their edges stay red). A brake light upright in the middle of the back bumper, a little muddy, lit only braking. They light nothing else (a red pool on the road, and red dust, 29 Sep 2026, taken out the same day) | `car.frag`, `TAIL_*` in `main.js`, `bench/livery.mjs` |
+| **Glowing tail lights** | The texture's pure reds (green and blue exactly 0) are drawn unlit: always on at their own red (1×; 0.6× until 29 Sep 2026, when they read as unlit), three times as bright braking, where the red past full burns towards orange-white (their brightest parts; their edges stay red). The upright brake light in the middle of the back bumper was removed on 1 Oct 2026 (round lamps drawn over these in `car.frag` that day were taken out again at the user's request: the texture's own lights are the ones wanted). They light nothing else | `car.frag`, `TAIL_*` in `main.js` |
+| **Brake-light glow** (1 Oct 2026) | Red light from the tail lights on what's close behind the car, as a rounded pool: an oval 1.6 m across and 2.4 m back, its middle 1.3 m behind the lights, falling off as 1 / (1 + d²)² (first a cone from the lights, which the user found "too straight"). Faint driving, much stronger braking (0.06 + 0.3 × (brightness − 1)); on the road twice as strong where it's wet, and a little on the rain just behind. (The car's soft shadow, added the same day, taken out again at the user's request) | `tailGlow` in `sky.glsl`, `terrain.frag`, `rain.frag` |
+| **Night** (1 Oct 2026; back to dusk 2 Oct 2026) | The same rainy forest at night: a dark blue sky (SKY (2, 3, 5)/31 at the horizon), mist darker still, the sky's light a faint blue (raised a third the same day: a little too dark), a trace of glow in the west; the headlight is most of the light. (Stars came and went the same day: in `sky.frag` at the game's resolution, then on a full-resolution canvas behind it, then in `sky.frag` again, single pixels; removed at the user's request.) The dusk values are kept in comments | `sky.glsl`, `sky.frag`, the clear colour in `main.js` |
+| **Sunny day** (2 Oct 2026; back to the rainy night the same day: "doesn't really fit the aesthetic") | Night and rain saved for later, to come and go during a drive: a blue sky (SKY (20, 24, 28)/31 at the horizon, ZENITH (0.26, 0.45, 0.78)), a sun ~40° up in the west-north-west with a disc and halo, sparse white clouds (`CLEAR` 0.45 of the texture's thickness is clear sky), a pale green-grey summer haze for the mist; light from the sun (`SUN_LIGHT`), the blue sky and a bounce. No rain streaks or rain sound, a dry road (no puddles or splashes), drier bamboo sheen, the headlight off and the tail glow on the ground a quarter as strong. The switches are `uWeather` in the frame block (`RAIN`, `LIGHTS` in `main.js`); the night's and dusk's colours are kept in `sky.glsl`'s comments | `sky.glsl`, `sky.frag`, `frame.glsl`, `terrain.frag`, `stalk.vert`, `main.js`, `sound.js` |
+| **Sound** (1 Oct 2026) | See "Sound, controls hint, touch controls" in Measurements | `sound.js` |
 
 - Fully misted land matches the sky's treeline behind it exactly, with no seam: both are the mist's
   colour at its furthest, looking that way (`mistColor` at 400 m, `mistAlong(dir, 1)` in the sky),
@@ -138,7 +142,7 @@ Misty, pixelated, low-poly. What makes it, and where it lives:
 | **Levels of detail: a vertex every 1 m within 100 m, 2 m within 220 m, 4 m to 400 m** | `terrain.js` (`createTerrain`, `select`), `main.js` (`DETAIL`), `terrain.vert` (`uChunk`) | Every chunk is 31 × 31 vertices, so coarser ones cover 60 or 120 m. A chunk gives way to its 4 finer children only once they can all be drawn: no holes while they're built. Skirts hide the cracks between levels. ~240 chunks built instead of ~740; ~52 drawn instead of ~170; terrain GPU 1.68 → 0.95 ms |
 | **Chunks kept in rings** of 14², 13² and 9² slots, one per level | `terrain.js` | Chunk (cx, cz) of a level always lives in slot (cx mod n, cz mod n): the chunks left behind free exactly the slots the new ones need. No map lookups, no allocation, and each slot keeps its GPU buffer and VAO for good (`bufferData` refills it, with new storage: see "Nothing the GPU may still be reading is written to") |
 | **Chunks built before they're needed, soonest first** | `terrain.js` (`mostDue`), `main.js` (`AHEAD`) | By distance, not by whole rows of chunks: they come into range a few at a time, each 40 m (1.1 s at top speed) before it's needed: before the fog shows it, or before its level takes over |
-| **Chunks built a row at a time, 1 ms per frame at most** | `terrain.js` (`update`), `main.js` (`BUILD_BUDGET`, `SEEN`) | The budget is per frame, not per chunk: a chunk (~0.5 ms, ~15 µs a row) is spread over 1-2 frames. Driving flat out needs ~0.21 ms per frame (~19 chunks a second). Any hole within 360 m is filled at once, past the budget: a slow frame rather than land appearing. And at most 100 rows per ms of budget (`ROWS_PER_MS`): Chrome's clock stops it first (~66 rows), but Firefox rounds `performance.now()` to 1 ms, or much coarser with its fingerprinting protection on, and could build until it ticks. No worker needed (yet): see measurements |
+| **Chunks built a row at a time, 1 ms per frame at most** | `terrain.js` (`update`), `main.js` (`BUILD_BUDGET`, `SEEN`) | The budget is per frame, not per chunk: a chunk (~0.5 ms, ~15 µs a row) is spread over 1-2 frames. Driving flat out needs ~0.21 ms per frame (~19 chunks a second). Any hole on screen within 333 m (`SEEN`; off screen, it waits its turn: 1 Oct 2026) is filled at once, past the budget: a slow frame rather than land appearing. Falling behind (the chunk needed soonest due within 20 m), up to 3 times the budget until caught up (3 Oct 2026). And at most 100 rows per ms of budget (`ROWS_PER_MS`): Chrome's clock stops it first (~66 rows), but Firefox rounds `performance.now()` to 1 ms, or much coarser with its fingerprinting protection on, and could build until it ticks. No worker needed (yet): see measurements |
 | **Rows skip roads that can't matter** | `terrain.js` (`nearbyRoads`, `farFromRoads`) | Per 11 vertices of a row, only the pieces whose edge comes within LAND_ROUNDING of the nearest (the smooth minimums reach no further); where every road is 76.5 m+ away, no road maths at all. The same bytes exactly |
 | Each chunk finds its nearby road pieces once | `terrain.js` (`findRoads`) | Room for 176 pieces within 79.5 m of the chunk (the most measured: 83), so each vertex checks a handful instead of the whole network |
 | **Roads worked out once, kept for the next chunks** | `terrain.js` (`cacheRoad`) | A road's bends and its height along it (sampling the land every 40 m) are most of the work of finding roads, and neighbouring chunks want the same few: 64 slots, one per hash of the road. 0.513 → 0.420 ms per chunk; the same bytes |
@@ -196,6 +200,509 @@ The cube (`shaders/cube.*`) is no longer in the game, but `bench/frames.html` st
 
 ## Measurements
 
+### Late arrivals held back, building catches up; where the time goes (3 Oct 2026)
+
+Asked for: objects sometimes "load in dramatically" round the car, as if late rather than culled:
+"perhaps by making them not load in if they are too late". Then: optimise everywhere (handed to a
+cloud session: see the leads below).
+
+- **What came late**: (1) after a jump (the first frame, a tow), the cherry and maple models were
+  made one a frame, nearest first, so they sprang up round the car over a second or more, and the
+  ground cover waited up to 250 ms (NATURE_REFRESH) to be gathered; (2) where the building falls
+  behind (Zen: Firefox's clock is rounded to 1 ms, its JS slower, its frame rate maybe lower;
+  `bench/keepup.js` at 3× slower and 30 fps: 16.6 chunks a second built of 22.7 needed, 127 drawable
+  chunks of 153), a finer chunk arrives once its land is in view, and its bushes and rocks (level 1)
+  or ferns (level 0) appear with it; (3) the ground cover's sector culling had no margin for the
+  copies' width or the tilted camera's bottom corners (they reach ~4° wider than the sides' middle
+  at 576 × 360, more tilted further): copies close by at the view's edges came in as the car turned.
+  The tree slots never run out (at most 23 cherries and maples within 450 m, at 60 places; 48 slots).
+- **Fixes**: after a jump, every tree within SEEN (333 m) is made at once, near ones whole, and the
+  ground cover gathered at once (main.js `jumped`). Building falling behind (the chunk needed
+  soonest due within `ahead / 2`, 20 m) gets up to CATCH_UP (3) times the budget (terrain.js
+  `update`): keepup at 3× slower, 30 fps: 22.5 chunks a second, all 153 drawable. And what still
+  comes late isn't let in while it can be seen: a chunk drawn for the first time in place of its
+  coarser parent (drawn last frame) holds back its new kinds' copies that are within their fade and
+  in view (`heldCopies`, keyed by kind and world square, so the finer chunks that take over hold
+  them too), and a newly found tree whose model's made in view within SEEN is `held`; each is let
+  in once it's out of view or beyond its distance. Forcing the building 33× slower: 75 copies held
+  in 20 s, 47 let in later, out of sight. Sector culling: the reach is now the view's widest corner
+  along the ground (from the view matrix) + half a sector + asin(moved / 25) + the biggest copy's
+  width (2.5 m) seen from 25 - moved m (all of it once moved is within 5 m of 25). Ground cover GPU
+  ~2.0 → ~2.2 ms driving the road (more copies at the edges); JS unchanged (~1.1 ms mean).
+- **Where the time goes now** (headless Chrome, 576 × 360, `?autodrive=road`, p50): GPU ~5.1 ms:
+  ground cover 2.0, trees 1.25, terrain 0.62, bamboo leaves 0.55, stalks 0.3, clear 0.13. JS ~1.0
+  ms mean (CPU profile, self time per second: bamboo.js `update` 11.6 ms, `treeWall` 4.2 (every
+  tree, every wall point, every physics step), `frame` 3.8, `wallAt` 2.2 (allocates an array each
+  call), the terrain's building ~10 in all, GC 0.6).
+  - The ground cover by group (timer queries round each: they add a little): ferns 0.76, bushes
+    0.46, stones 0.32, boulders 0.17, rocks 0.15, slabs 0.12, flowering 0.14. Its fragment shader is
+    ~45% of it (a trivial one: 2.0 → 1.06 ms); copies gathered per kind are ~3× those within its
+    fade (whole chunks within fade + 15 m are taken: ferns 175 gathered, 58 within 55 m), each still
+    run through the vertex shader; and per copy far more than its vertices explain (rocks 0.15 ms for
+    28 copies of 60 vertices): per-draw costs (~27 instanced draws a frame) or the timer queries.
+  - Leads not yet taken: copies filtered by distance when gathered; cheaper rock shading (two
+    3D noises a pixel, 8 integer hashes each: slow on Intel Gen9); fewer fern triangles; the trees
+    drawn without indices (drawArrays: no vertex reuse) and their bark's five noises; `treeWall`
+    and `wallAt`; bamboo's list (97 KB uploaded a frame); building the terrain in a worker.
+
+### Pop-in, flowers, grass off; the ground cover culled by sector (3 Oct 2026)
+
+Asked for: bushes visibly appearing, trees changing too much from far model to near, the flowering
+bushes' flowers jagged (a few whole cards of blossom), grass faded so near it was better without;
+trees and bushes kept (they make the place); and the fans still came on.
+
+- **Measure at the game's size**: it renders ~360 rows (576 × 360 on the laptop), not 1280 × 720;
+  there the pixels cost little and vertices (everything drawn, seen or not) most. At 576 × 360 at
+  the usual spot: the ground cover 4.2 ms, everything else 2.1.
+- **No more shrinking away**: each kind of ground cover fades out dithered (nature.vert's vFade
+  against the screen's dither pattern; beyond its fade, a copy's vertices are put outside the view)
+  where the mist's thick: bushes 95-130 m (was shrinking 55-75), rocks 80-110, ferns 40-55.
+- **Grass off** (`GRASS` in nature.js: tufts, tall grass, wildflowers, reeds; their code kept).
+- **Flowering bushes**: a new texture layer, FLOWERING (textures.js): the leaves with 40 small
+  five-petalled flowers over them, twice as bright; every card of a flowering bush wears it, and
+  nature.frag colours the bright texels in the kind's uBloom (white, pink, lilac, muted) instead of
+  the leaves' green. Far off, the mipmaps blend them into a paler speckle.
+- **Trees**: the far model keeps the near one's crown card for card (copied), and only the twigs go
+  (trunk, limbs and branches three-sided): ~3,300 vertices against ~9,100; from 90 m (was 70),
+  the near one made within 115.
+- **The ground cover culled**: drawn all round the camera, ~5 times what's in view. Now each kind's
+  copies are sorted, as they're gathered, into buckets: within NATURE_NEAR (25 m), and 16 sectors
+  round the camera; each frame only the runs of buckets the view may take in are drawn (the view's
+  half-width + half a sector + how far the camera's moved since: asin(moved / 25)); a run is one
+  draw, the copies' attributes re-pointed to its start (WebGL2 has no base instance). Gathered
+  again once the camera's 12 m on. Bush cores coarse (20 triangles, was 80: hidden by the cards).
+- **After** (576 × 360): ground cover 4.2 → 1.1-1.4 ms; in all ~3.1 ms (trees ~1.0, terrain 0.3,
+  bamboo leaves 0.3, stalks 0.15). Not measured in Zen.
+
+### Stutter and fans: tree models, culling, far trees (3 Oct 2026)
+
+Asked for: "hyperoptimise the whole game"; then, midway: the flowering bushes too vibrant, the
+game stuttering a lot and the fans coming on (grass suspected).
+
+- **Where the time went** (headless Chrome, 1280 × 720, at 4042, 5433 facing back; GPU ms p50):
+  11.6 in all, of which the trees 4.9 and the ground cover 3.9; everything else ~2.8 (terrain 0.9,
+  bamboo leaves 1.0, stalks 0.3, clear 0.3). Single runs vary by ±2 ms (other things on the GPU):
+  compare alternating runs.
+- **The stutter**: timing each part of the frame (car, terrain, scatter, gathering, bamboo, tree
+  models) driving the road for 20 s: everything under ~3.5 ms except the cherry and maple models,
+  6.5 ms each on average, up to 21 ms, and all of a newly found group made in the same frame. Fixed:
+  (1) trees.js writes vertices straight into one reused Float32Array (no array of numbers to push
+  onto and copy): 2.1 → 1.3 ms a tree in Node; (2) one model a frame at most, nearest first; (3) a
+  tree's far model only until it comes within TREE_DETAIL (95 m): 0.54 ms (the shape still grows
+  from the same random numbers, its vertices not written; checked: the same far model either way).
+  After: the worst frame 4-6 ms, but the first second (shaders compiling: 48 ms).
+- **Far trees** (trees.js `treeModel`): from TREE_LOD (70 m) a cherry or maple draws its far model:
+  trunk and limbs, four-sided; a card in a third of the clusters, twice the size, two each; its
+  petals on cards twice the size: ~900 vertices, against ~9,100. Of 16 cherries and maples here,
+  11 were 280-370 m off, deep in the mist, each drawn whole.
+- **Culling**: cherries and maples out of view aren't drawn, the rest nearest first; broadleaf trees
+  likewise, their per-shape lists of copies refilled each frame from those in view. Trees 4.9 →
+  2.5 (far models) → 1.1 (broadleaf culled).
+- **Ground cover**: grass shrinks away by 30 m (was 50), ferns by 32 (was 40), bushes by 75 (was 95),
+  bushes 16 leaf cards (was 22, now 15% bigger). By group, before these: grass 0.9, ferns 0.8,
+  rocks 0.5, bushes 1.0. Flowering bushes muted (colours ~0.5 rather than ~0.85) and on a fifth of
+  their cards (was 40%).
+- **After**: 6.2-7.8 ms in all (was 11.6): trees ~1.1, ground cover ~2.6-3.0. Not measured in Zen.
+
+### Our own ground cover and maples, instead of the nature pack (3 Oct 2026)
+
+Asked for: the pack's models didn't fit the look of the rest; take all of it out, and make our own,
+as the cherry trees are: high-performance grass, bushes and rocks. All of it is now made in code at
+startup (`nature.js`, no files to load); `bench/nature.py` and the pack's `game/` folder are gone,
+build.sh no longer copies it (dist 3.2 MB → 1.3 MB). The pack itself was deleted
+from assets/ too (3 Oct 2026).
+
+- **Kinds** (30, in `nature.js` `KINDS`): grass tufts (4 shapes, 9 blades), tall grass (2), tufts
+  with wildflowers (4: white, buttercup, violet, pink), reeds with bulrushes (2), ferns (3), stones
+  (clusters, 2), rocks (3), a slab, boulders (2), bushes (4 shapes) and bushes in flower (3: white,
+  pink, lilac). Per vertex: position, normal, uv, sway, colour, layer (13 floats); per copy as before.
+- **Look**: grass, reeds and ferns are solid triangles in vertex colours (dark at the root to the
+  meadow's green at the tip, some dry), lit mostly as the ground under them; bushes a dark lumpy core
+  (an icosahedron split once) with 22 leaf cards laid round it facing out, wearing a new texture
+  layer, LEAF (textures.js: a spray of broad pointed leaves, grey, tinted by the vertex colour),
+  or the blossom's for the flowering ones; rocks lumpy icosahedra, faceted, mottled and mossy on
+  top in the shader (two noises), shining wet in the rain, as the bridges' timber does.
+- **Where**: tufts on 1 m squares as before (reeds on the banks; tall grass and wildflowers in the
+  open), ferns on 3 m squares under the bamboo and along its edges, bushes on 6 m, rocks on 5 m
+  (more on the banks and steep ground). Boulders only 6 m or more from the road, and they stop the
+  car (`rockWall`, from the gathered copies, in main.js's `wallAt`).
+- **Maples** (trees.js): made as the cherries are (`treeModel`, `tree.kind === 'maple'`): forking
+  higher, fewer and more upright limbs, LEAF cards (1.8 m) in the tree's own crimson, scarlet,
+  orange or gold, now and then the next colour; fallen leaves under it (the petals' cards, in its
+  colour). At most 4 a group, as the cherries. Its leaves' cut-out is dithered by cover
+  (built.frag): cut at half, a maple 60 m off showed bare branches (the mipmaps average leaf and
+  gap). Broadleaf trees are all the tree_01 model again.
+- **Cost** (headless Chrome, 1280 × 720, at 4042, 5433 facing back; GPU ms per frame, p50):
+  - First version, 450 × 237 driving the road: 19.7 ms. By group: ferns 8.9, grass 5.7, rocks 4.8,
+    bushes 1.0. Two causes. Tiny triangles: far off a blade or a leaflet is under a pixel, and the
+    GPU shades at least a 2 × 2 block per triangle; so one triangle a blade (was three), ferns 5
+    steps a frond with shared stem points (was 9, unshared), stones and rocks on a plain icosahedron
+    (20 faces; boulders and slabs 80). And `discard`: every pixel of every kind went through the
+    near camera's fade (near.glsl), and a shader that can discard stops the GPU hiding what's behind
+    before shading it, so grass drawn over itself was shaded every time. nature.frag is now compiled
+    twice (`#define SOLID`, gl.js `loadProgram`'s new `defines`): the solid kinds (all but the
+    bushes) without the fade or the cut-out, drawn first. Then: grass 1.5, ferns 2.0, rocks 1.2,
+    bushes 1.4. Ferns fade by 40 m (was 60) and rocks by 75 (was 120): 3.6 ms.
+  - Here: the ground cover 3.5 ms, the trees 4.8 (maples now cards, as cherries), all 10.7;
+    with ?nonature 8.2. (The pack was 3.1-3.2 ms here, all 12.3.) Not measured in Zen.
+
+### The nature pack: ground cover, more trees, meadows (3 Oct 2026) (replaced the same day: above)
+
+Asked for: the open areas looked off and bland; use the CC0 nature pack (assets/retro_nature_pack,
+by ElegantCrow: 8 trees, 8 bushes, 12 grass models, low-poly, 128-256 px textures in four seasons)
+to improve everything. The plan: (1) ground cover over the whole map: grass tufts and patches on the
+verges, in the clearings and on the river's banks, bushes along the groves' edges and in the
+clearings, some in flower; (2) the pack's trees among the broadleaf groups, and red autumn maples in
+groups of their own; (3) meadow ground in the clearings instead of leaf litter; (4) all of it
+instanced, cheap enough.
+
+- **Files** (`bench/nature.py` → `assets/retro_nature_pack/game/`): the 27 models in one OBJ;
+  textures in two strips, each a texture array: 18 layers of 128 × 128 (grass, the 8 bushes in
+  summer and 7 flowering spring ones, picked by measuring: over 2% of texels bright and not green)
+  and 11 of 256 × 256 (8 trees in summer, the 3 reddest in autumn: tree04, 03, 02); clear texels'
+  colours bled in (black in the pack).
+- **Drawing** (`nature.js`, `shaders/nature.*`): every model in one vertex and one index buffer;
+  per kind (36), a VAO and a buffer of copies, one instanced draw each. Copies shrink to nothing
+  between two distances (grass 40-55 m, its patches 35-50, bushes 70-95) rather than vanishing.
+  Foliage lit as if facing out from the plant's middle and up; sways, the higher the more; alpha
+  dithered; texture × 1.0 (× 0.8 read as black tufts against the ground).
+- **Scattering** (`nature.js` `scatter`): each chunk, when it's uploaded, on world squares (so a
+  chunk and its finer children agree), from its vertices (height, road edge, grove byte, slope):
+  tufts on 1 m squares (finest chunks only), grass clumps and patches on 4 m, bushes on 6 m (two
+  finest levels); flowering bushes 35% in the open, 10% elsewhere. 0.07 ms a chunk. Reeds: tufts on
+  the banks' slopes round the water's edge (the riverbed's byte can't tell the bed from the bank at
+  the waterline, so only where it slopes). Gathered from the drawn chunks within each kind's fade
+  (+15 m) whenever the drawn chunks or the trees change, at most every 250 ms.
+- **Grass off** (later the same day, asked for): `GRASS = false` in nature.js: no tufts, clumps or
+  patches (bushes, trees and the meadow ground stay). True brings them back as measured here.
+- **Trees**: groups now 25% cherries (at most 4 a group, was 8), 12% maples, the rest broadleaf, 60% of
+  those the pack's (1.5-2.1× its size: 6-11 m). Trunks stop the car as before.
+- **Meadows** (terrain.frag): level ground where the bamboo's thinner than 0.4 is grass, greener
+  or drier in broad patches (the litter's texture at 1/8 scale), the litter showing in places.
+- **Near the camera** (`shaders/near.glsl`): trees and plants fade out (dithered) from 4.5 m to none
+  within 2 m of the camera: the chase camera was looking out from inside cherry crowns by the road.
+- **Cost** (headless Chrome, 1280 × 720, at 4042, 5433 facing back; GPU ms per frame, p50):
+  - First version: the pack 17-18 ms. By kind: bushes 13.8 (~4,300 of them, to 190 m: their crossed
+    cards drawn over each other many times), grass patches 2.5, tufts 1.8 (~16,000), pack trees 0.5.
+    Fixed: bushes nearer and fewer (6 m squares, fade by 95 m), patches fade by 50 m, and only
+    chunks within reach gathered: ~5,500 tufts, ~330 bushes; the pack 3.1-3.2 ms.
+  - Found on the way: the trees from before (cherries, broadleaf) cost 7.7 ms: cherries ~0.19 ms
+    each (31 here), the tree_01 broadleaf ~0.035 (49). Cherry groups capped at 4: 14 here, the trees
+    4.4 ms. (Moving the blossom's shading noise into the vertices and the petals' edge noise to a
+    cheap wave changed nothing measurable: it's their geometry and cards, not the shading.)
+  - Now: all GPU sections 12.3 ms, 9.1 with `?nonature` (new: turns the pack off, to measure it).
+    New profiler sections `trees` and `nature`. Not measured in Zen.
+
+### Broadleaf trees, and trees in groups (3 Oct 2026)
+
+- **The model**: assets/tree_01 (laubbaum.blend, from the user: three trees, 720 vertices each, and a
+  1536 × 2048 texture of a twig card, a leaf card and bark). No Blender here: `bench/blend2obj.py`
+  reads the .blend itself (2.67, 64-bit: its blocks and the DNA that describes their structs: each
+  object's mesh, MVert/MPoly/MLoop/MLoopUV, moved by its obmat, z up to y up), and
+  `bench/tree01.py` splits it into tree_a (Circle to Circle.004 and the 53 Plane leaf cards), tree_b
+  (Circle.005) and tree_c (Circle.009), each standing at 0, 0, 0 (8.0, 7.9 and 9.6 m tall), as
+  `tree_01.obj`; and the texture at 384 × 512 (`tree_01.png`, 350 KB; ~90 texels a metre on a leaf
+  card), its clear texels' colour filled in from the leaves round them (black in the original:
+  the mipmaps would have darkened every leaf's edge).
+- **Drawing** (trees.js `loadBroadleaf`, `shaders/tree.*`): the three shapes in one buffer (2,604
+  vertices each, as triangles), one instanced draw per shape for all the trees of it (where each
+  stands, turned, 0.8-1.2× its size). Bark smooth-shaded; leaf cards lit as if facing out from the
+  crown and up; leaves sway, more the higher. Alpha dithered (not cut at half), so crowns don't thin
+  far off. Its texture's lighting is a sunny day's: × 0.75. Mipmapped, linear (a photo, not texel art).
+- **Groups** (terrain.js `groupIn`): in each 35 m square, one in 0.8 has a group round a point in its
+  middle, if that's within 30 m of a road's edge or 20 m of a river's: 1 to 8 trees (mostly few)
+  within 12 m, 4.5 m apart at least, each checked where it stands (as before; broadleaf trees may
+  stand where the bamboo's up to 0.5 thick, cherries 0.15, with a clearing round them). 3 in 10 groups
+  cherries, the rest broadleaf. Over 16 places 3 km apart: ~55 trees within 450 m (0-98), ~11 of them
+  cherries (were ~13 trees, all cherries). Finding them: median 1 ms every 50 m driven, at most 17 ms
+  (a square with a big cherry group: each cherry samples 121 ground heights for its petals); 15-70 ms
+  on a jump to a new place.
+- **Trunks**: every trunk stops the car at least 0.36 m round (`WALL_RADIUS`): a broadleaf's (~0.16 m)
+  slipped between the car's wall points (0.6-0.7 m apart) on a glancing hit, and the car drove through
+  it. Two more wall points down each side. Driven at a broadleaf from three angles: stopped each
+  time, 2.3 m from the trunk. Physics bench unchanged.
+
+### Cherry trees in blossom (3 Oct 2026)
+
+Then, asked for: three times the branches, and the fallen petals seen much further off and thinning
+out at their edge (the square cards showed: the petals stopped dead at the last whole square).
+
+- **Branches**: 5-7 limbs (was 3-5), each into 3-5 branches and those into 3-5 twigs (was 2-3):
+  ~3× the branches. Twigs 4-sided; 3 blossom cards per cluster (was 5), as there are ~3× the
+  clusters. ~9,200 vertices a tree (26 near the bridge at 4042, 5433: 11.5 MB, 109 ms to make).
+- **One buffer per tree** (main.js `TREE_SLOTS`, 48, made at the start): all trees in one buffer,
+  refilled whenever one came or went, would now be ~11 MB each time; a tree found now fills only its
+  own (~0.44 MB, its model made then, ~4 ms).
+- **Petals**: reach 7 m (was 4.5; terrain.js's ground grid 11 × 11, ± 7.5 m), their texture laid
+  by where they are from the trunk, so built.frag thins them from 1 m out to none by 7 m, the edge
+  wandering ±1.25 m by noise. Not cut at half alpha but against a random threshold per 4 cm of ground,
+  so far off, where the mipmaps average them, they're still a pink speckle; and thinner from 15 to
+  60 m away. (The screen's 4 × 4 dither pattern, tried first, drew a far patch, squeezed into a few
+  rows at a glancing angle, as a regular dotted line.)
+
+- **Where** (terrain.js `findTrees`): in each 20 m square, one in 0.8 might have one, at a random
+  point in its middle; it does if that's a clearing (grove under 0.15 there and under 0.45 3.5 m
+  round it), within 3-16 m of a road's edge or 14 m of a river's, out of the water, and fairly level
+  (under 1.8 m of rise across 6 m). Each square is worked out once and kept while near (450 m).
+  Rejections over 16 places 3 km apart: 4,300 too far from a road or river, 1,141 the odds, 168 not a
+  clearing. 50 m squares gave ~2 trees within 450 m; 20 m squares give ~13 (0-23). Cost: ~2.6 ms
+  every 50 m driven (with the bridges' search), ~40 ms on a jump to a new place.
+- **Model** (trees.js `treeModel`, made once per tree): a trunk (0.24 m, forking at 1.7-2.5 m,
+  leaning a little, starting 0.5 m underground) into 3-5 limbs spreading wide, each into 2-3
+  branches, each into 2-3 twigs; tapered 6-sided tubes, bent between their two pieces. Blossom: 5
+  cards crossed at random, 1.1-1.7 m, round each twig's end and each branch's middle, lit as if
+  facing out from the crown. Fallen petals: cards on the ground's 1.5 m grid (heights from terrain.js,
+  2 cm above) within 4.5 m of the trunk.
+- **Textures** (textures.js, layers 10-12, so 13 now): BARK (reddish grey, pale lenticel bands round
+  it), BLOSSOM (900 five-petalled flowers in a lumpy round clump, alpha cut), PETALS (scattered, in
+  drifts). All 13 layers take 91 ms.
+- **Drawing**: built.vert / built.frag, a buffer of their own, without culling (both sides of the
+  cards); bark mottled and mossy, blossom and petals alpha-tested, the blossom lit softly and shaded
+  in patches (noise at 0.7 m), stirring 5 cm in the wind. First pass was too bright and flat a pink
+  for the dusk: colour [0.95, 0.72, 0.80] to [0.80, 0.56, 0.64], less light.
+- **Trunks stop the car** (trees.js `treeWall`): the car's wall points (car.js `WALL_POINTS`) now add
+  points along the bumpers and down the sides, at most 0.6 m apart, as a trunk could slip between
+  the bumper's corners (1.48 m apart). Driven at a trunk: from 9.7 m/s to a stop with the bumper on
+  it. Physics bench unchanged (on the road 23.0 m/s, 0 jumps; off road identical with or without the
+  new points).
+
+### Bridge ends sunk into the road, river plants and boulders, aged timber (2 Oct 2026)
+
+- **Bridge ends** (terrain.js `BRIDGE_SINK`): each deck runs on 1.5 m into the road at both ends,
+  sinking to 10 cm below it, so the ground swallows its ends evenly (before, only where the road
+  bulged above the deck's straight end piece: one end, by chance). The end posts reach 30 cm below
+  the deck. The car doesn't drive on the sunk ends but on `drive`, the deck carried straight on:
+  driving the sunk kink at 25 m/s gave 4 jumps and a tip-over in the 40 min on-road bench (from 0);
+  with `drive`, back to 0 (23.0 m/s).
+- **End posts**: their caps (two blocks on top) taken off, as asked.
+- **Big boulders** (terrain.js `bigBoulder`): in each 16 m square, 30% have one, 2.2-3.8 m across,
+  0.4-1.2 m out of the water, a lumpy dome; only where its middle is in the water. Solid ground
+  (the car hits them), textured as riverbed.
+- **On the water** (water.frag `floating`), procedural, nothing added to the buffers: lily pads in
+  patches (1.6 m squares, likelier in the thick 9 m patches), 0.6-1.1 m across with a notch and
+  veins; one in 8 with a pink lotus (eight petals, yellow heart); fallen bamboo leaves (yellowed,
+  brown or green), drifting back and forth, slowly turning. Pads fade out from 50-90 m, leaves from
+  20-40 m (smaller than a pixel beyond).
+- **Aged timber** (built.frag): each board its own shade (by which 25 cm board across the grain),
+  weathered silver-grey in patches and darkened in others (noise at 1.7 m), a fine mottle (12 cm), and
+  moss in patches, more on what faces up, speckled. First tried heavier (threshold 0.62): the deck
+  read as mostly green; 0.68-0.82 is subtler.
+- **Cost**: chunks 0.68 ms (unchanged). The water's and timber's extra shading isn't measured
+  (headless Chrome only; few pixels).
+
+### Deeper rivers, water as its own layer, narrower bridges (2 Oct 2026)
+
+Asked for: rivers were too shallow (the bed was the water's surface: you could drive along them),
+the bed too flat, the textures glitched by the banks, and the water zig-zagged at its edges (it was
+painted on the land's vertices: a hard cut where the interpolated grove byte crossed -0.5). And
+bridges ~30% narrower.
+
+- **Bed** (terrain.js `riverBed`): the banks carry on down under the water to a bed `RIVER_DEPTH`
+  1.6 m deep in the middle (60% of that at the sides), uneven (±0.5 m noise at 6 m), with boulders
+  (noise at 2.5 m, up to 2.2 m tall), the tallest breaking the surface by up to 0.35 m. 2.6 m was
+  tried first: the car vanished completely under the water; at 1.6 m its roof shows.
+- **Water** (`shaders/water.vert` / `water.frag`, main.js): a layer of its own, on the chunk's grid
+  (not its skirts), for chunks with a vertex within 4 m of a river's edge (`slot.wet`): per vertex the
+  water's height and how deep it is (`slot.water`, 2 shorts). Blended over the land, no depth
+  writes, drawn after the land; murky, see-through in the shallows (35% opaque at the edge, 95% from
+  1.6 m deep), reflecting the sky as the puddles do, with small drifting waves and the rain's rings
+  (`ripple` moved into `shaders/ripple.glsl`, shared with terrain.frag). The shoreline is now where
+  the land's triangles cross the water's: smooth, at every level of detail.
+- **Banks**: the grove byte is now, where negative, how much riverbed a vertex is: -127 under the
+  water, fading to 0 from 0.5 to 2.5 m past its edge (it blends smoothly into the groves, which start
+  2 m out). terrain.frag textures it as dark wet silt and stones (the bank texture laid flat at half
+  scale; hung down the slope where steep), with a little shine.
+- **Wading** (car.js `WATER_DRAG`, terrain.js `waterAt`): the water slows the car, by up to 1.6/s
+  once 1 m in. In headless Chrome, full throttle along a river: 10 m in 5.5 s, and the boulders turned
+  it into the bank. The camera stays 1 m above the water.
+- **Bridges**: `BRIDGE_NARROW` 0.7: half-widths 2.3-2.6 m (were 3.25-3.75), narrower than the road:
+  one car at a time; the end posts stand in the road's edges.
+- **Cost**: chunks 0.68 ms each (bench/build.mjs); physics bench unchanged (23.0 m/s, 0 tip-overs).
+  The water layer's GPU cost is not measured (only chunks near a river draw it).
+
+### Timber bridges with railings that stop the car (2 Oct 2026)
+
+Every bridge is now a weathered timber bridge, built of blocks in code (`blocks.js` lays boxes along a
+line into one buffer, drawn by `shaders/built.*`). Each has a plank deck laid across two beams, a
+railing each side (posts every 2 m, a top rail and a middle one), taller capped posts at the ends, and
+bents of two piles and a cross-beam into the river every 7 m and at its middle. A timber texture was
+added (textures.js `wood`, 16 texels a metre): boards with gaps, butt joints, nails, knots, and some
+greyed by weather. Decks and railings run 0.3 m past each joint, so a bend leaves no wedge, and so
+does `groundAt`'s deck (1 m).
+
+The railings stop the car (bridges.js `bridgeWall`, blocks.js `inBox`): the body's hull points are
+pushed out of them by physics.js's `collideWithWall`, with the same impulses as the ground (bounce 0.2,
+friction 0.3), so it knocks and scrapes along. Checked in Node: steering into a railing from the
+middle of a bridge, the car slows from 18 to 9 m/s and stays on the deck.
+
+The same day, stone and vermilion bridges, tunnels, villages with lanes and block houses, and rice
+paddies were built, then all undone at the user's request, leaving only these timber bridges. Things
+learnt then, in case they come back:
+- A terrain shader that can `discard` loses the early depth test: 33% more terrain GPU time, even
+  with nothing discarded.
+- A height-field can't have a hole for a tunnel's mouth.
+- A cache of village houses must only be filled from a road search that covers them.
+
+### Rivers and bridges (2 Oct 2026)
+
+The start of making the world worth exploring (the plan: postage stamps to collect across the map).
+Bridges are plain blocks for now; models can come later.
+
+- **Rivers** (terrain.js, "Rivers"): where a broad noise (2,400 m) plus a little of a finer one
+  (350 m, so they meander) crosses 0. The distance from a river's middle is the noise over its slope,
+  worked out on an 8 m grid and blended. Rivers are 12 m wide and run along the floor of a broad
+  valley: the hills and ridges sink to the valley floor within 350 m of the water (relief), so the
+  roads, which follow the land, come down to them. The water is level across the river, 1.5 m below
+  the valley floor, between banks of 1.5 m up per m out. The land, roads included, is cut down to the
+  banks wherever it's higher. Water vertices carry -127 in the grove byte, and terrain.frag draws them
+  as dark water that reflects the sky like the puddles, with the rain's rings. There's no bamboo
+  within 8 m of the water. Roads stop bending (their meander and winding) from 150 m to 20 m from a
+  river, so they cross it straight.
+- **Bridges** (terrain.js, findBridges; bridges.js; shaders/bridge.*): over every road piece the
+  banks cut into, plus one more each end, each corner as high as the road there (+5 cm), so a bridge
+  follows the road even where it runs along a river. Found among the roads within 500 m of the camera,
+  again every 100 m (0.3 ms on average, 1 ms at worst, in Node). Each piece is drawn as a deck, a low
+  wall each side, and a pier under the river's middle. The car drives on `terrain.groundAt`: the
+  ground, or a deck where that's higher.
+- **Measured** over 24 × 24 km: 278 bridges (one per ~2 km²). Lengths: median 40 m, p90 70 m, at most
+  211 m (a road alongside a river). Deck over the river's middle: at least 1.7 m, median 4.8 m. Before
+  the valleys were widened (150 m) the median was 6 m and some were 25 m+. 8 bridges are over a bank
+  only (the road comes close without crossing). Every road corner the banks cut into is on a bridge
+  (54,661 checked); before bridges started from any cut piece, not just crossings, 20 weren't.
+- **Cost:** chunk building +11% (0.68 to 0.76 ms a chunk in Node). Worked out at every vertex, the
+  river was +57%; the 8 m grid with a small table of its corners, and passing the distance on rather
+  than asking again, brought it down.
+- **Not yet:** the walls and pier don't stop the car (it can drive off a bridge into the river, and
+  drives on the water: T tows it back). The water is level across but follows roadLevel along the
+  river, so it slopes gently (up to ~5%).
+- `bench/relief.mjs` now draws the water (blue) and the bridges (red, near the centre). `?spawn=x,z,back`
+  faces the car the other way along the road.
+
+### Sunny day, then the rainy night, then the rainy dusk (2 Oct 2026)
+
+Then, asked which "original" they meant, "Yes dusk": back to the rainy dusk of before 1 Oct 2026
+(`sky.glsl`'s colours and light, the clear colour in `main.js` and `sky.frag`'s comment exactly as
+in the commit f56071f), headlights on. Kept from since: the tail lights' glow on the road, rain not
+lit by the headlight, no rain splashes, the `uWeather` switches; the night's and day's values are
+in `sky.glsl`'s comments. Checked in headless Chrome.
+
+
+Back to the rainy night the same day ("Sunny doesn't really fit the aesthetic - can you revert to
+the original old rainy and dark"): the night's colours and light in `sky.glsl` and its clouds in
+`sky.frag` exactly as before, `RAIN = 1, LIGHTS = 1`. Kept: the `uWeather` switches (at 1 they do
+just what the old code did), `daylight()`, and the day's values in `sky.glsl`'s comments, for
+weather that changes over a drive later. Checked in headless Chrome: the same night as before.
+The sunny day, as it was:
+
+Asked for: "revert back to day and make it sunny, save rain and night for later, we could make
+that dynamic". Not a revert to the dusk (that was overcast and rainy): new day colours, a sun and
+white clouds (see "Sunny day" in the look table). Rain and night are switches now, in a new vec4 at
+the end of the frame block (`uWeather`: x rain, y lights; `frameData` 40 → 44 floats), set from
+`RAIN = 0, LIGHTS = 0` in `main.js`: the rain isn't drawn, its sound is silent, the road's
+wetness and puddles (and their splashes) are scaled by it, the headlight and most of the tail glow
+by the lights. The sky and light colours are still constants: making day and night change over a
+drive means turning those into uniforms too. `dusk()` is now `daylight()` (and `vDusk`
+`vDaylight`).
+
+Checked in headless Chrome (three places along the roads, and a drive with `?profile`): it draws,
+GPU per frame much as before (land 0.52 ms, leaves 0.49, stalks 0.31, sky 0.05; rain 0). Colours
+judged by eye from the screenshots, not tuned further.
+
+
+### Sound, controls hint, tail lamps, car shadow, touch controls (1 Oct 2026)
+
+Asked for: "Add control hint and sfx and make a bamboo rustle sound. Then subtle rounded brake lights
+and remove the vertical brake light strip. Add car shadow. Finally add touch controls." (And the slow
+first load: "likely browser related", left.)
+
+- **Sound** (`sound.js`, Web Audio), started by the first key or touch (and woken by later ones: a
+  touch only counts once the finger lifts; checked in an emulated phone):
+  - The engine: the downloaded `Car_Engine_Start_Up` once, then `Car_Engine_Loop` looping, its speed
+    following the back wheels (0.75× idling to 1.75× at 30 m/s), louder and brighter (a low-pass
+    opening up) on the throttle. Converted to WAV by `bench/sounds.mjs` (headless Chrome decodes the
+    OGGs: Vorbis, which not every Safari can; 22,050 Hz mono; the loop's end crossfaded into its
+    start over 80 ms; the start-up scaled down from a peak of 1.18): 124 + 84 KB.
+  - Made in code: rain (a hiss, and a lower patter); the tyres' grit (bursts of noise a few ms long,
+    played faster the faster they roll; softer off the road); sliding; splashing through puddles
+    (`kickUp` now says how many tyres are on the road and in puddles); and the bamboo: leaves
+    brushing (longer bursts, high-passed) as loud as the car is pushing stalks aside (`bamboo.js`'s
+    new `pushed`, radians a frame) plus a little for those still springing back, and now and then a
+    hollow knock (two tones, the second an overtone, dying in 0.14 s) for a stalk it reaches, at most
+    about 6 a second.
+  - M mutes; it stops while the page is hidden. **Not heard by me** (headless): the levels are guesses
+    to tune by ear. The audio context runs; no console errors.
+- **Controls hint** (`ui.js`, `style.css`): the keys along the bottom, fading 8 s after the first
+  press; H shows or hides it. On touch screens, one line about the buttons.
+- **Later the same day:** the rain's splashes of droplets round the car taken out (`rainOnGround`:
+  lit by the headlight, they flickered; the streaks themselves no longer catch the headlight either;
+  the rings on the puddles stay). The bamboo's data textures are filled with zeros when made: Firefox
+  warned that it was clearing them itself before the first partial upload. (It also warns that
+  uploads "from a buffer with a final row with a byte count smaller than the row stride" can cost
+  extra: the bamboo's rows through their pixel buffer; not reproduced here, left.)
+- **Touch controls, later the same day: one joystick, nothing else** (asked for: "a single joystick
+  with no other controls"). A ring resting at the bottom left; a thumb down anywhere brings it there;
+  dragging up to 60 px steers as far as it's pushed, and past a third of the way up or down presses
+  the accelerator or the brake. No hint on touch screens. The first touch goes full screen (the whole
+  page, so the joystick comes too) and locks to landscape where the browser allows (Android; iPhone
+  Safari can't, so `index.html` has the web app tags and `manifest.webmanifest`: added to the home
+  screen, it opens full screen, sideways). `100dvh` for the canvas, so phones' moving toolbars don't
+  leave a gap. Checked in Chrome emulating a phone: drives, steers, sound starts, full screen.
+  Tow, flip and mute have no touch control (the car rights itself after 2 s stuck anyway).
+- *(First version, replaced:)* **Touch controls** (`ui.js`), only on touch screens (`pointer: coarse`): a steering pad on the left
+  (which side of its middle each thumb is; slide across), the accelerator, brake and handbrake on the
+  right, tow / flip / sound along the top. They hold the same key codes in `held` as the keyboard.
+  Checked in Chrome emulating a phone sideways (844 × 390, 3×): driving and steering work. Also: a
+  viewport meta tag, and the pixel blocks are sized from the screen's shorter side (a phone's
+  `screen.height` stays its long side turned sideways).
+- **Then, same day:** the shadow taken out again; night instead of dusk, with stars; the brake
+  lights' red glow on the road behind (see the look's table).
+- **Brake light strip removed** (`car3_zen.png` repainted without the bumper's light). Round lamps drawn over the tail lights the same day were reverted: the user wanted the texture's own lights, always on and glowing, kept. **Shadow:** see the look's table.
+- **Engine quieter** (asked for, same day): running 0.22-0.46 → 0.09-0.20, start-up 0.5 → 0.2. Changed by ear-less guess.
+- **Speed:** a 25 s `?autodrive=road` drive: JS p50 1.1 ms, p99 2.3, terrain GPU 0.50 ms, no late
+  frames: as before. `dist/` 41 files, 624 KB (the two WAVs added to `build.sh`).
+
+### Tow fixed and its pause cut; first-frame warm-up; fps in the profile (1 Oct 2026)
+
+Asked for: the tow freeze and pause (from the review below); "the game also stutters on first load";
+and "ran really slow when I tested it in safari on an m4 macbook - both safari and zen were faster on
+my intel machine". Headless Chrome on this machine (Intel), test server on port 8002 (the user's
+8001 left alone); the scripts are in the session's scratchpad (`fix/`).
+
+- **Tow freeze fixed.** `nearestRoad` searches one cell each way, and two if no road comes within
+  one (a road found further away than the square searched reaches might not be the nearest).
+  40,000 random places: no NaN (was 1), the known spot (−517345, −353763) finds its road 1,771 m
+  away; 0.59 ms a call, slowest 2.7. And T does nothing if the answer isn't finite (never seen).
+- **Tow pause: 158-178 → 34-46 ms** (the frame after T, JS; 6 tows of 5-15 km, in the browser,
+  through a DevTools breakpoint at the end of a frame: the tow done there, timed the next frame).
+  1. Not building everything missing (`cut ? Infinity : budget`), only the holes inside `SEEN`,
+     as every frame does: 86-119 ms. Fewer than measured in Node in the review (39-56 ms, which
+     had the road cache warm): cold, it's ~130 chunks. Plus ~22 ms of uploads in the frame.
+  2. **Only the holes on screen** (`terrain.update`'s new `planes`): 34-51 chunks of ~130. A
+     hole's box is tested against the view from the land's lowest to its highest (−60 to 100 m:
+     the land measured −39 to 75 m in every chunk round 150 random places): tested as ±1000 m, the
+     view volume, tilted down, took in the bottoms of boxes behind the camera and almost nothing
+     was left out (~100 holes). The rest are built by the budget over the next few seconds, nearest
+     first, so turning finds few: after each tow, driving in a tight circle for 5 s filled 0-9 holes
+     as they came into view, 1-2 in a frame, 1.6-4.1 ms; no frame over 5 ms; no gaps in the land
+     in the screenshots.
+  - A 30 s `?autodrive=road` drive is unchanged (before / after: JS p50 1.3 / 1.0 ms, p99 2.4 /
+    2.2, 1 late frame each, the first); `bench/keepup.js` none behind; `bench/build.mjs`'s
+    checksum unchanged (962083aadeaf2ee3).
+- **First load.** Headless Chrome shows no stutter: from the first frame (9.6-10.5 ms of JS, the
+  first uploads) every gap is 16.6-16.8 ms, standing or driving. So it's likely the browser:
+  Firefox (and so Zen) on macOS draws with OpenGL, which finishes making a program only the first
+  time it draws with it. Every program draws on the first frame except the particles', which drew
+  first a frame or two later, when the rain's first splashes appear. Now the first frame draws one
+  particle anyway (the buffer's zeros: no opacity, every pixel discarded). GL error 0 on the first
+  three frames; no console errors. **Not checked in Zen or Safari**: to see, `?profile`'s "late
+  frames in 10 s" just after loading.
+- **Safari on an M4.** Can't be run here (no Safari without taking over the screen, and this is
+  an Intel Mac). The game's work is small for an M4 (~360 rows, ~3 ms of Intel GPU, ~1.2 ms of
+  JS), so something outside it is the likelier cause; one candidate: Safari halves the frame rate
+  in Low Power Mode. So `?profile`'s overlay now shows the frames a second (over the last 50
+  frames) after the canvas size: 30 there would be Safari holding the page back; 60 with many late
+  frames, the game. (The overlay already worked in Safari: no GPU timings, as in Firefox.)
+
 ### Renamed Easy Roads; on GitHub; ready for Cloudflare Pages (30 Sep 2026)
 
 Asked for: "rename project as easy-roads and push to github", and "prep for cloudflare pages deploy".
@@ -212,7 +719,7 @@ Asked for: "a full codebase review looking for bugs and performance improvements
 
 **Bugs found (not fixed yet).**
 
-- **Towing (T) far from any road freezes the game.** `nearestRoad` searches one cell (1,600 m) each
+- **Towing (T) far from any road freezes the game.** (Fixed 1 Oct 2026: see above.) `nearestRoad` searches one cell (1,600 m) each
   way (the comment on `searchList` says two). With no road piece in that square it answers NaN: the
   car is placed at NaN, and the next frame throws in `terrain.update` (`slots[NaN]`), which stops
   the game loop. 1 of 40,000 random places, e.g. (−517345, −353763), where the nearest road is
@@ -233,7 +740,7 @@ Asked for: "a full codebase review looking for bugs and performance improvements
 - CPU profile (20 s): busy ~0.65 ms a frame in our functions; `bamboo.update` 0.23 ms of it (35%),
   then `roadDistance`, `layers`, `buildRow` ~0.03 each; garbage collection 6 ms in 20 s.
 - `bench/keepup.js`: none behind in any case, even 3 × slower.
-- **A tow is one long frame:** it builds everything missing around the new place at once, 230-270
+- **A tow is one long frame** (cut to 34-46 ms on 1 Oct 2026: see above)**:** it builds everything missing around the new place at once, 230-270
   chunks, 142-180 ms (Node; it was ~40 ms, 81 chunks, when the tow was made a cut on 28 Sep). Filling
   only the holes inside `SEEN`, as every other frame does, is 64-81 chunks, 39-56 ms; the rest (in
   96%+ mist) would follow at the usual 1 ms a frame. Startup likewise: textures ~50 ms and puddles
@@ -2536,8 +3043,7 @@ the GPU time. See "Bamboo overhaul, mist and treeline".
 
 **Phase 5: extras.**
 
-- **Sound:** none yet. Rain on leaves, and the engine (`assets/Sound effects` has engine loops
-  and acceleration), with Web Audio.
+- **Sound:** done 1 Oct 2026 (see Measurements). Not yet: the acceleration recordings, gears.
 - Stone lanterns or small shrines at junctions, as warm lights at dusk; brake-light glow on the
   wet road (already on the list below).
 
@@ -2577,6 +3083,8 @@ packs; the low resolution and dither will pull them together, but check side by 
 
 ## Still to do (in rough priority order)
 
+- [ ] **Postage stamps to collect across the map** (asked for 2 Oct 2026). Done so far: rivers, and
+      timber bridges whose railings stop the car (see those notes).
 - [ ] **Map rework: a rainy bamboo forest at dusk.** See "Plan: the map rework" above; phases 1-4
       are done (bamboo, rain, sky: 29 Sep 2026), phase 5 (sound, lanterns) is left.
 - [x] **Splashes through puddles**, a particle effect of their own (asked for 28 Sep 2026, made 29

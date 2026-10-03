@@ -9,6 +9,7 @@ const ROOT = new URL('../', import.meta.url);
 // car.js fetches its model files: read them from disk instead.
 globalThis.fetch = async path => ({ text: async () => readFileSync(new URL(path, ROOT), 'utf8') });
 const { createTerrain } = await import(new URL('terrain.js', ROOT));
+const { bridgeWall } = await import(new URL('bridges.js', ROOT));
 const { createCar, placeCar, updateCar, followTheRoad, WHEEL_RADIUS, WHEEL_HALF_WIDTH } = await import(new URL('car.js', ROOT));
 
 const only = process.argv[2];
@@ -32,10 +33,13 @@ const roll = car => Math.asin(car.body.axes[1]);   // left side up +
 
 function newCar(heightAt, x = 0, z = 0) { const car = createCar(); placeCar(car, x, z, 0, heightAt); return car; }
 // Drive for `seconds` at 60 fps. keys(t, car) returns { throttle, brake, handbrake, steer }.
+// On the terrain (heightAt.terrain), its bridges are kept found round the car, as main.js does round
+// the camera, and their railings stop it (heightAt.walls).
 function drive(car, heightAt, seconds, keys, each) {
   for (let k = 0; k < Math.round(seconds / DT); k++) {
     const t = k * DT, i = keys(t, car);
-    updateCar(car, i.throttle ? 1 : 0, i.brake ? 1 : 0, i.handbrake ? 1 : 0, i.steer || 0, DT, heightAt);
+    heightAt.terrain?.update(car.x, car.z, 0);
+    updateCar(car, i.throttle ? 1 : 0, i.brake ? 1 : 0, i.handbrake ? 1 : 0, i.steer || 0, DT, heightAt, heightAt.walls);
     each?.(t, car);
   }
 }
@@ -134,7 +138,9 @@ for (const [name, ground] of [['a 20° slope facing uphill', plane(0, Math.tan(2
 
 if (only !== 'flat') {
   // Endless terrain, built around the car as it goes (like main.js, but with no time limit).
-  const terrain = createTerrain({ radius: 2 }), H = terrain.heightAt;
+  const terrain = createTerrain({ radius: 2 }), H = terrain.groundAt;
+  H.terrain = terrain;
+  H.walls = (x, y, z, normal) => bridgeWall(terrain.bridges, x, y, z, normal);
   const onTerrain = (car, keys) => (t, c) => { terrain.update(c.x, c.z, Infinity); return keys(t, c); };
   const random = seed => () => ((seed = Math.imul(seed, 1664525) + 1013904223 | 0) >>> 0) / 4294967296;
   // Places to start: two groups of 4 on roads, in different parts of the forest.

@@ -11,7 +11,8 @@
 // Two 16-bit integers (see terrain.js): height in cm, and cm from the road's edge (frayed,
 // negative on the road).
 layout(location = 0) in ivec2 aVertex;
-// xyz: the ground's unit normal, from the heights around it; w: how thick the bamboo grows, 0 to 1.
+// xyz: the ground's unit normal, from the heights around it; w: how thick the bamboo grows, 0 to 1,
+// or, negative, how much riverbed (-1 under a river's water).
 // (One attribute of 4 bytes: Metal reads attributes straight from the buffer only if each starts on
 // a multiple of 4 bytes, and the browser would otherwise convert the buffer first.)
 layout(location = 1) in vec4 aNormal;
@@ -21,7 +22,7 @@ out vec3 vWorldPos;
 out vec3 vNormal;
 out float vEdge;    // m from the road's edge: negative on it
 out float vGrove;
-out vec3 vDusk;     // the daylight on it (sky.glsl), less under the groves
+out vec3 vDaylight;     // the daylight on it (sky.glsl), less under the groves
 out vec4 vMist;     // rgb: the mist's colour; a: how much of it
 
 const float GROVE_SHADE = 0.4;  // the thickest bamboo keeps this much of the sky off the ground
@@ -45,8 +46,8 @@ void main() {
   vWorldPos = vec3(x, float(aVertex.x) * 0.01, z);
   vNormal = aNormal.xyz;
   vEdge = float(aVertex.y) * 0.01;
-  vGrove = aNormal.w;
-  vDusk = dusk(normalize(aNormal.xyz)) * (1.0 - GROVE_SHADE * vGrove);
+  vGrove = aNormal.w;  // negative on a river's bed (terrain.js)
+  vDaylight = daylight(normalize(aNormal.xyz)) * (1.0 - GROVE_SHADE * max(vGrove, 0.0));
   vMist = vec4(mistColor(vWorldPos), mist(vWorldPos));
   gl_Position = uViewProj * vec4(vWorldPos, 1.0);
 }

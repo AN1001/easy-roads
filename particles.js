@@ -92,8 +92,10 @@ const TAILPIPE_X = -0.45, TAILPIPE_Y = 0.28, TAILPIPE_Z = -1.95;
 const SPLASH = 3;          // drops per m a tyre rolls through a puddle
 
 // What the car kicks up this frame. `ground` answers questions about the ground under a tyre:
-// roadDistanceAt and edgeAt (terrain.js), and puddleAt (textures.js).
-export function kickUp(particles, car, throttle, dt, ground) {
+// roadDistanceAt and edgeAt (terrain.js), and puddleAt (textures.js). Into `under`, for the sound:
+// how many tyres are on the road, and how many in a puddle.
+export function kickUp(particles, car, throttle, dt, ground, under) {
+  under.road = under.puddle = 0;
   const v = car.body.velocity;
   const speed = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
   const m = car.model;  // columns: side (0-2), up (4-6), forward (8-10), position (12-14)
@@ -103,6 +105,7 @@ export function kickUp(particles, car, throttle, dt, ground) {
     if (!wheel.onGround) continue;
     const x = wheel.groundX, y = wheel.groundY, z = wheel.groundZ, road = ground.roadDistanceAt(x, z);
     const onRoad = road < 0, verge = !onRoad && road < 1;
+    if (onRoad) under.road++;
     const colour = onRoad || verge ? GRIT : DUST, sliding = Math.max(0, wheel.slip - SLIDING);
 
     // Off the road, dust, more from the driven back wheels, and more still sliding: thrown up
@@ -124,6 +127,7 @@ export function kickUp(particles, car, throttle, dt, ground) {
     // ones up and behind. (Not puffs of spray: pale on the dark road, a see-through puff's dither
     // shows as a square of dots.)
     if (onRoad && speed > 1 && ground.puddleAt(x, z) && ground.edgeAt(x, z) < -0.8) {
+      under.puddle++;
       const side = wheel.x > 0 ? 1 : -1;  // +x is the car's left
       for (let n = Math.min(howMany(SPLASH * speed * dt), 12); n > 0; n--) {
         const out = side * (wheel.front ? 1.5 + 2 * Math.random() : 0.3 + Math.random());
@@ -153,22 +157,5 @@ export function kickUp(particles, car, throttle, dt, ground) {
       m[14] + TAILPIPE_X * m[2] + TAILPIPE_Y * m[6] + TAILPIPE_Z * m[10],
       0.3 * v[0] - m[8] + spread(0.3), 0.2 + 0.2 * Math.random(), 0.3 * v[2] - m[10] + spread(0.3),
       0.8 + 0.4 * Math.random(), 0.12, 0.5, 0.3, EXHAUST);
-  }
-}
-
-// Rain splashing on the ground round the car, mostly in front of it, where the camera looks: each
-// drop that lands throws up a couple of tiny droplets. (Those on puddles also ring out across them:
-// terrain.frag.) `heightAt` is terrain.js's.
-const RAIN_SPLASHES = 160;           // a second
-const SPLASH_BEHIND = 4, SPLASH_AHEAD = 18, SPLASH_ACROSS = 9;  // m from the car
-export function rainOnGround(particles, car, dt, heightAt) {
-  const m = car.model;
-  for (let n = howMany(RAIN_SPLASHES * dt); n > 0; n--) {
-    const along = -SPLASH_BEHIND + (SPLASH_AHEAD + SPLASH_BEHIND) * Math.random(), across = SPLASH_ACROSS * (2 * Math.random() - 1);
-    const x = car.x + along * m[8] + across * m[0], z = car.z + along * m[10] + across * m[2];
-    const y = heightAt(x, z) + 0.02;
-    for (let k = 0; k < 2; k++) {
-      throwDrop(particles, x, y, z, spread(0.8), 0.7 + 0.6 * Math.random(), spread(0.8), 0.04, 0.8);
-    }
   }
 }

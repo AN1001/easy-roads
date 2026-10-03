@@ -10,4 +10,5 @@ layout(std140) uniform Frame {
   vec4 uTail;       // xyz = between the tail lights (no shader uses it now), w = how bright they are
   vec4 uTime;       // x = seconds since the game started (the rain, the wind, the clouds), y = m one
                     // pixel spans 1 m in front of the camera
+  vec4 uWeather;    // x = rain, 0 (dry) to 1; y = lights, 0 (day: headlight off, little tail glow) to 1 (night)
 };

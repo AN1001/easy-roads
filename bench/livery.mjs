@@ -7,8 +7,8 @@
 //
 //   node bench/livery.mjs [zoomed.png]   also writes the texture 6× the size, to look at
 //   node bench/livery.mjs --zen          the zen car the game uses (since 30 Sep 2026),
-//                                        car3_zen.png: the model's green, and only the brake
-//                                        light on the back bumper, with its fleck of mud
+//                                        car3_zen.png: the model's green, two copies (the
+//                                        bumper's brake light gone since 1 Oct 2026)
 
 import { readFileSync, writeFileSync } from 'fs';
 import { png, readPng } from './png.mjs';
@@ -230,10 +230,7 @@ across('front', sponsor(40, 7, BLUE, WHITE, 41), -20, 43);
 
 if (!Number.isNaN(where[6 * (2 * W + 2)])) throw new Error("the spoiler's texel is on the car");
 put(0, 2, 2, SPOILER);
-if (ZEN) {  // none of it but the brake light
-  colour.fill(null);
-  for (let v = 17; v <= 21; v++) for (const u of [1, 2]) for (const copy of [0, 1]) put(copy, u, v, BRAKE_LAMP);
-}
+if (ZEN) colour.fill(null);  // none of it (the brake light on the bumper too, since 1 Oct 2026)
 
 // --- Mud ---
 

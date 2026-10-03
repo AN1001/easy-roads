@@ -1,6 +1,6 @@
 // Textures made at startup, as the layers of one texture array: for the ground, earth banks, the
 // forest floor, grass and the road's sand; for the bamboo, its culms, its leaves and its clumps far
-// off; and the clouds. And the road's puddles, in a texture of their own (createPuddles).
+// off; the clouds; and timber, for the bridges. And the road's puddles, in a texture of their own (createPuddles).
 // The ground's are square tiles that repeat seamlessly, 16 m across at 8 texels per metre: chunky,
 // and still at least a pixel per texel on the road beside the car at 360 rows. The shaders multiply
 // their own colours by them, so a texel is a brightness, with a tint, around 1, stored halved (128
@@ -12,8 +12,9 @@
 
 export const TEXTURE_SIZE = 128;    // texels along each side
 export const TEXELS_PER_METRE = 8;  // the ground's: must match terrain.frag
-export const TEXTURE_LAYERS = 9;    // in this order (the shaders' *_LAYER constants):
-export const BANK = 0, FLOOR = 1, GRASS = 2, SAND = 3, CULM = 4, LEAVES = 5, CLOUDS = 6, CLUMPS = 7, FAR_LEAVES = 8;
+export const TEXTURE_LAYERS = 15;   // in this order (the shaders' *_LAYER constants):
+export const BANK = 0, FLOOR = 1, GRASS = 2, SAND = 3, CULM = 4, LEAVES = 5, CLOUDS = 6, CLUMPS = 7, FAR_LEAVES = 8,
+  WOOD = 9, BARK = 10, BLOSSOM = 11, PETALS = 12, LEAF = 13, FLOWERING = 14;
 
 const N = TEXTURE_SIZE;
 
@@ -21,7 +22,7 @@ const N = TEXTURE_SIZE;
 export function createTextures() {
   const pixels = new Uint8Array(N * N * 4 * TEXTURE_LAYERS);
   const layer = new Float32Array(N * N * 4);  // r, g, b brightness around 1, and alpha
-  [bank, floor, grass, sand, culm, leaves, clouds, clumps, farLeaves].forEach((make, k) => {
+  [bank, floor, grass, sand, culm, leaves, clouds, clumps, farLeaves, wood, bark, blossom, petals, leaf, flowering].forEach((make, k) => {
     layer.fill(1);
     make(layer);
     pack(layer, pixels, k);
@@ -408,6 +409,161 @@ function clouds(layer) {
       const d = layered(u, v, 32, 4, 101);
       const t = Math.min(Math.max((d + 0.2) / 0.6, 0), 1);
       layer[(v * N + u) * 4 + 3] = t * t * (3 - 2 * t);
+    }
+  }
+}
+
+// --- Timber, for the bridges (bridges.js), at BUILT_TEXELS_PER_METRE, twice the ground's, so a
+// tile is 8 m across ---
+
+export const BUILT_TEXELS_PER_METRE = 16;  // must match built.frag
+
+// Timber: boards 4 texels (25 cm) wide side by side along u, their grain along v; a dark gap between
+// boards, and each board ends somewhere (a butt joint) with nail heads either side of it. Each board
+// its own shade, some greyed by weather; fine grain streaks, and a few knots. The shaders turn it so
+// the grain runs along a beam or post, and the boards lie across a deck.
+function wood(layer) {
+  const BOARD = 4, boards = N / BOARD;
+  for (let b = 0; b < boards; b++) {
+    const shade = 0.9 + 0.25 * (random(b, 0, 211) - 0.5), grey = random(b, 1, 211) < 0.3;
+    const joint = Math.floor(random(b, 2, 211) * N);
+    for (let v = 0; v < N; v++) {
+      for (let t = 0; t < BOARD; t++) {
+        const u = b * BOARD + t;
+        let value = shade + 0.12 * smooth(u * 4, v, 1, 16, 212 + b) + 0.05 * (random(u, v, 213) - 0.5);
+        if (t === 0) value = 0.4;                                  // the gap between boards
+        else if (t === BOARD - 1) value -= 0.08;                    // the board's edge, in shadow
+        if (v === joint) value = 0.45;                              // its end
+        else if ((v === wrap(joint + 1, N) || v === wrap(joint - 1, N)) && (t === 1 || t === 2) && random(b, v, 214) < 0.6) value = 0.35;  // nails
+        const knot = Math.hypot(t - 1.5, wrap(v - Math.floor(random(b, 3, 211) * N) + N / 2, N) - N / 2);
+        if (random(b, 4, 211) < 0.4 && knot < 1.2) value -= 0.3;   // a knot
+        if (grey) set(layer, u, v, value * 0.95, value * 0.95, value * 0.95);
+        else set(layer, u, v, value * 1.12, value, value * 0.8);
+      }
+    }
+  }
+}
+
+// --- The cherry trees (trees.js), at BUILT_TEXELS_PER_METRE too ---
+
+// Bark: dark, reddish grey, round the trunk along u, up it along v: the cherry's lenticels, short
+// pale bands running round it, on rough streaks up it.
+function bark(layer) {
+  for (let v = 0; v < N; v++) {
+    for (let u = 0; u < N; u++) {
+      let value = 1 + 0.25 * layered(u, v, 16, 3, 221) + 0.1 * (random(u, v, 222) - 0.5);
+      value += 0.15 * smooth(u * 4, v, 8, 64, 223);  // streaks up it
+      // Lenticels: every few texels up, a band 1 texel high and a few long, here and there.
+      const band = Math.floor(v / 3);
+      if (v % 3 === 0 && random(Math.floor(u / 5), band, 224) < 0.35) value += 0.4;
+      set(layer, u, v, value * 1.1, value * 0.95, value * 0.9);
+    }
+  }
+}
+
+// Blossom: a cloud of flowers on a card (trees.js lays several crossed at each branch's end), u and v
+// across it: five-petalled flowers, pale pink to white, a darker pink heart, packed into a lumpy
+// round clump (alpha 1 on a flower, 0 between and round the edge, so a card's square never shows).
+function blossom(layer) {
+  for (let o = 0; o < layer.length; o += 4) { layer[o] = 1.05; layer[o + 1] = 0.85; layer[o + 2] = 0.95; layer[o + 3] = 0; }
+  const middle = N / 2;
+  for (let k = 0; k < 900; k++) {
+    // Thicker towards the middle.
+    const angle = random(k, 0, 231) * 2 * Math.PI, reach = Math.sqrt(random(k, 1, 231)) * (middle - 8);
+    const cu = middle + Math.cos(angle) * reach, cv = middle + Math.sin(angle) * reach;
+    const radius = 2.2 + 1.6 * random(k, 2, 231), turn = random(k, 3, 231) * 2 * Math.PI;
+    const pale = random(k, 4, 231);  // white to pink
+    for (let v = Math.floor(cv - radius - 1); v <= cv + radius + 1; v++) {
+      for (let u = Math.floor(cu - radius - 1); u <= cu + radius + 1; u++) {
+        if (u < 1 || v < 1 || u >= N - 1 || v >= N - 1) continue;
+        const du = u + 0.5 - cu, dv = v + 0.5 - cv, d = Math.hypot(du, dv) / radius;
+        const petals = 0.75 + 0.25 * Math.cos(5 * (Math.atan2(dv, du) + turn));
+        if (d > petals) continue;
+        const o = (v * N + u) * 4;
+        // Lighter at the petals' tips, darker pink at the heart; some flowers in shade.
+        const shade = 0.75 + 0.35 * d + 0.2 * (random(k, 5, 231) - 0.5);
+        const heart = d < 0.3;
+        layer[o] = shade * (heart ? 0.95 : 1.05);
+        layer[o + 1] = shade * (heart ? 0.45 : 0.78 + 0.2 * pale);
+        layer[o + 2] = shade * (heart ? 0.6 : 0.88 + 0.12 * pale);
+        layer[o + 3] = 1;
+      }
+    }
+  }
+}
+
+// Fallen petals, on cards on the ground under the trees (trees.js): single petals scattered, more
+// in drifts, the rest clear (alpha 0).
+function petals(layer) {
+  for (let o = 0; o < layer.length; o += 4) { layer[o] = 1.05; layer[o + 1] = 0.85; layer[o + 2] = 0.95; layer[o + 3] = 0; }
+  for (let v = 1; v < N - 1; v++) {
+    for (let u = 1; u < N - 1; u++) {
+      const drift = 0.5 + 0.5 * layered(u, v, 32, 2, 241);
+      if (random(u, v, 242) > 0.18 * drift * drift) continue;
+      // A petal: this texel and, half the time, the one beside it.
+      const shade = 0.9 + 0.25 * random(u, v, 243);
+      for (const [du, dv] of random(u, v, 244) < 0.5 ? [[0, 0]] : [[0, 0], [1, 0]]) {
+        const o = ((v + dv) * N + u + du) * 4;
+        layer[o] = shade * 1.05; layer[o + 1] = shade * 0.8; layer[o + 2] = shade * 0.9; layer[o + 3] = 1;
+      }
+    }
+  }
+}
+
+// --- Bushes and maples (nature.js, trees.js) ---
+
+// Leaves: a spray of broad leaves on a card, pointing out from its middle, each pointed at the tip,
+// its own shade (a few lighter, a few yellowing), a darker midrib, overlapping in a lumpy round clump
+// (alpha 1 on a leaf, 0 between and round the edge, as the blossom's). Near grey, so the colour it's
+// drawn in tints it: green on the bushes, red, orange and gold on the maples.
+function leaf(layer) {
+  for (let o = 0; o < layer.length; o += 4) { layer[o] = 1; layer[o + 1] = 1; layer[o + 2] = 1; layer[o + 3] = 0; }
+  const middle = N / 2;
+  for (let k = 0; k < 220; k++) {
+    const angle = random(k, 0, 251) * 2 * Math.PI, reach = Math.sqrt(random(k, 1, 251)) * (middle - 16);
+    const cu = middle + Math.cos(angle) * reach, cv = middle + Math.sin(angle) * reach;
+    // Pointing out from the middle, give or take.
+    const turn = angle + (random(k, 2, 251) - 0.5) * 1.2, du0 = Math.cos(turn), dv0 = Math.sin(turn);
+    const length = 9 + 6 * random(k, 3, 251), width = length * (0.3 + 0.12 * random(k, 4, 251));
+    const shade = 0.8 + 0.4 * random(k, 5, 251), yellow = random(k, 6, 251) < 0.12 ? 0.2 : 0;
+    for (let v = Math.floor(cv - length - 1); v <= cv + length + 1; v++) {
+      for (let u = Math.floor(cu - length - 1); u <= cu + length + 1; u++) {
+        if (u < 1 || v < 1 || u >= N - 1 || v >= N - 1) continue;
+        const pu = u + 0.5 - cu, pv = v + 0.5 - cv;
+        const along = (pu * du0 + pv * dv0) / length, across = (pv * du0 - pu * dv0) / width;  // along: -1 to 1
+        if (along < -1 || along > 1) continue;
+        const half = Math.sin(Math.PI * (along + 1) / 2) ** 0.8 * (1 - 0.35 * Math.max(along, 0));  // pointed at the tip
+        if (Math.abs(across) > half) continue;
+        const rib = Math.abs(across) < 0.12 ? 0.8 : 1;
+        const light = shade * rib * (0.9 + 0.2 * (1 - Math.abs(across) / half));
+        set(layer, u, v, light * (1 + yellow), light * (1 + 0.5 * yellow), light * (1 - yellow));
+        layer[(v * N + u) * 4 + 3] = 1;
+      }
+    }
+  }
+}
+
+// Leaves in flower, for the flowering bushes (nature.js): the leaves' card, with five-petalled
+// flowers scattered over it, 5-7 cm across, twice as bright as the leaves (nature.frag tells them
+// apart by that, and colours them in the bush's own, rather than tinting them green), each with a
+// yellower heart. Spread over every card, so a bush flowers all over (one card in five, until 3 Oct
+// 2026, wearing the blossom's: jagged, a few flowery faces).
+function flowering(layer) {
+  leaf(layer);
+  const middle = N / 2;
+  for (let k = 0; k < 40; k++) {
+    const angle = random(k, 0, 261) * 2 * Math.PI, reach = Math.sqrt(random(k, 1, 261)) * (middle - 18);
+    const cu = middle + Math.cos(angle) * reach, cv = middle + Math.sin(angle) * reach;
+    const radius = 2.8 + 1.2 * random(k, 2, 261), turn = random(k, 3, 261) * 2 * Math.PI;
+    for (let v = Math.floor(cv - radius - 1); v <= cv + radius + 1; v++) {
+      for (let u = Math.floor(cu - radius - 1); u <= cu + radius + 1; u++) {
+        const o = (v * N + u) * 4;
+        if (layer[o + 3] === 0) continue;  // on the leaves only
+        const du = u + 0.5 - cu, dv = v + 0.5 - cv, d = Math.hypot(du, dv) / radius;
+        if (d > 0.7 + 0.3 * Math.cos(5 * (Math.atan2(dv, du) + turn))) continue;
+        const heart = d < 0.3, shade = 2.0 + 0.3 * random(k, 4, 261);
+        layer[o] = shade; layer[o + 1] = shade * (heart ? 0.9 : 1); layer[o + 2] = shade * (heart ? 0.55 : 0.97);
+      }
     }
   }
 }

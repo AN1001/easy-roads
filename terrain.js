@@ -7,6 +7,8 @@
 // shade the ground under it). The vertex shader works out x/z from the vertex's index, so the grid
 // itself costs no memory. Level 0's chunks also plant the bamboo (bamboo.js draws it).
 
+import { boxInFrustum } from './math.js';
+
 export const CHUNK_QUADS = 30;            // 1 m grid squares along each side of a chunk
 const CHUNK_VERTS = CHUNK_QUADS + 1;      // 31: neighbouring chunks share their edge vertices
 const BORDERED = CHUNK_VERTS + 2;         // 33: plus a ring of heights around it, for its normals
@@ -128,6 +130,7 @@ const armKind = (i, j, k) => k < 4 ? kindOf(i, j, k) : kindOf(i + DI[k], j + DJ[
 function straightRoad(i, j, k) {
   return k === 0 ? mainAcross(j) || random(i, j, 104) < SIDE_CHANCE : mainUp(i) || random(i, j, 105) < SIDE_CHANCE;
 }
+
 
 // Halfway along the road from node (i, j) in direction k (0-3), pushed out to one side.
 function swingPoint(i, j, k, out) {
@@ -476,12 +479,14 @@ function measure(last) {
 // Bend the curve from side to side: each corner moved across it (square to the line between the
 // corners either side), smoothly (two layers of noise along the road, `seed` its own), by up to
 // about MEANDER m in long bends and WIND m in short ones for its kind of road, and less within
-// WIND_EASE m of either end, so the road still leaves each node as it did.
+// WIND_EASE m of either end, so the road still leaves each node as it did; and near a river, so it
+// runs straight across it (on a bridge: see findBridges), from RIVER_STRAIGHT_TO m from the water.
 function wind(last, kind, seed) {
   const length = along[last];
   for (let p = 1; p < last; p++) {
     const s = along[p];
     shift[p] = smoothstep(0, WIND_EASE, s) * smoothstep(0, WIND_EASE, length - s)
+      * smoothstep(RIVER_HALF + RIVER_STRAIGHT_FROM, RIVER_HALF + RIVER_STRAIGHT_TO, riverDistance(curve[2 * p], curve[2 * p + 1]))
       * (MEANDER[kind] * noise(s / MEANDER_WAVE, 0.5, seed) + WIND[kind] * noise(s / WIND_WAVE, 0.5, seed + 1));
   }
   let beforeX = curve[0], beforeZ = curve[1];  // the corner before, where it was
@@ -714,21 +719,143 @@ const RIDGE_WIDTH = 0.4;   // how much of the ridge noise's range is ridge, not 
 const RIDGE_HEIGHT = 40;   // m above the valleys, on average (±20 m)
 const SPUR_WAVE = 170, SPUR_WIDTH = 0.4, SPUR_HEIGHT = 10;  // m, -, m: the small ridges
 const VALLEY = 4;          // m: the valley floors, below roadLevel
+// m: lower and higher than any land, and its bamboo (the land measured -39 to 75 m, in every chunk
+// round 150 random places, 1 Oct 2026; the bamboo stands up to 15 m)
+const LOWEST = -60, HIGHEST = 100;
 
-// The land's height above roadLevel at (x, z), away from any road.
-function relief(x, z) {
+// --- Rivers ---
+//
+// Rivers wind through the forest where a broad noise crosses 0 (as the ridges do, but 0 is the
+// middle of the river, not the top of a ridge), with a finer one added so they meander. Each runs
+// along the floor of a broad valley: the hills and ridges sink to the valley floor towards it
+// (relief), and the roads, which follow the land, come down to cross it on a bridge (findBridges).
+// The water is level across the river, RIVER_DROP m below the valley floor (so it slopes gently
+// along it with roadLevel), between earth banks; the land is cut down to the banks wherever it's
+// higher, roads and all (riverBed), so a road reaching a river stops at the bank, and the bridge
+// carries it over. Below the water the banks carry on down to a bed RIVER_DEPTH m deep, uneven,
+// with boulders, some breaking the surface (riverBed). The water itself is a layer of its own
+// (water.vert / water.frag), level across the river, drawn over the bed: each chunk near a river
+// keeps its height, and how deep it is, at each vertex (slot.water). The bed and the wet bank just
+// above the water are marked in the vertices' grove byte (negative: see buildRow), for
+// terrain.frag to texture as riverbed.
+const RIVER_WAVE = 2400;     // m: the noise's scale (rivers are ~1-2 km apart)
+const MEANDER_RIVER = 0.1, RIVER_MEANDER_WAVE = 350;  // the finer noise: how much of it, and its scale (m)
+const RIVER_HALF = 6;        // m: half the water's width
+const RIVER_VALLEY = 350;    // m from the water: the land sinks to the valley floor within this
+const RIVER_DROP = 1.5;      // m: the water below the valley floor (roadLevel - VALLEY)
+const RIVER_BANK = 1.5;      // m up per m out: how steep the banks are
+const RIVER_STEP = 2;        // m: for the noise's slope
+const RIVER_DEPTH = 1.6;     // m: the bed below the water, at the middle (less towards the sides): the car half under
+const BED_BUMPS = 0.5, BED_WAVE = 6;          // m: the bed's unevenness, and its scale
+const BOULDERS = 2.2, BOULDER_WAVE = 2.5;     // m: boulders on the bed: how tall at most, and their scale
+const BOULDER_TOP = 0.35;    // m: the tallest break the water by up to this
+// And now and then a big boulder standing out of the water: in each BIG_CELL m square, one in
+// BIG_ODDS has one, somewhere in its middle half, BIG_RADIUS m across (and up to BIG_RADIUS_MORE more),
+// its top BIG_TOP m above the water (and up to BIG_TOP_MORE more); only if it's in the water.
+const BIG_CELL = 16, BIG_ODDS = 0.3, BIG_RADIUS = 1.1, BIG_RADIUS_MORE = 0.8, BIG_TOP = 0.4, BIG_TOP_MORE = 0.8;  // m
+const WET_FROM = 0.5, WET_TO = 2.5;  // m past the water's edge: the bank's riverbed fades into the land
+const WATER_REACH = 4;       // m past the water's edge: the water's layer is kept for vertices within this
+const RIVER_STRAIGHT_FROM = 20, RIVER_STRAIGHT_TO = 150;  // m from the water: roads stop bending, and start to (wind)
+// Bridges (findBridges): found within BRIDGE_REACH m each way of the camera (beyond the mist's
+// end), again every BRIDGE_REFRESH m it moves; at most about BRIDGE_LONGEST m long. They reach a
+// piece past where the banks cut more than BRIDGE_CLEAR m below the road; they're BRIDGE_WIDER m
+// wider each side than the road, all × BRIDGE_NARROW (30% narrower: 2 Oct 2026), and their decks BRIDGE_LIFT m above it (so the road doesn't show
+// through).
+const BRIDGE_REACH = 500, BRIDGE_REFRESH = 100, BRIDGE_LONGEST = 400;  // m
+const BRIDGE_CLEAR = 0.3, BRIDGE_WIDER = 0.5, BRIDGE_LIFT = 0.05;  // m
+const BRIDGE_NARROW = 0.7;
+// At each end the deck runs on BRIDGE_SINK_REACH m into the road, sinking to BRIDGE_SINK m below it,
+// so the ground swallows its end a little (the same at both ends: before, only where the road
+// happened to bulge above the deck's straight piece). Only to look at: the car drives on the deck
+// carried straight on, BRIDGE_LIFT above the road (`drive`), as the sunk ends' kink threw it at
+// speed (bench/physics.mjs: 4 jumps and a tip-over in 40 min on the road, from 0).
+const BRIDGE_SINK = 0.1, BRIDGE_SINK_REACH = 1.5;  // m   // and then only this much as wide (narrower than the road: one car at a time)
+
+// The rivers' noise: 0 in the middle of a river.
+function riverNoise(x, z) {
+  return noise(x / RIVER_WAVE, z / RIVER_WAVE, 170) + MEANDER_RIVER * noise(x / RIVER_MEANDER_WAVE, z / RIVER_MEANDER_WAVE, 171);
+}
+// m from the middle of the nearest river, about, + on one side and - on the other: the noise over
+// how fast it changes (at least half its usual rate, so where it's flattest the land isn't all
+// river). Worked out at the corners of a RIVER_GRID m grid, and blended between them: it's smooth
+// enough, and every vertex asks (worked out at each, chunks took half as long again to build). The
+// corners are kept in a small table, by where they are: each is wanted by many vertices around it,
+// a row at a time, and by the chunks either side.
+const RIVER_GRID = 8;      // m
+const RIVER_TABLE = 4096;  // corners kept
+const tableX = new Int32Array(RIVER_TABLE).fill(-2147483648), tableZ = new Int32Array(RIVER_TABLE);
+const tableAcross = new Float64Array(RIVER_TABLE);
+function riverCorner(i, j) {
+  const k = (Math.imul(i, 73856093) ^ Math.imul(j, 19349663)) & (RIVER_TABLE - 1);
+  if (tableX[k] === i && tableZ[k] === j) return tableAcross[k];
+  const x = i * RIVER_GRID, z = j * RIVER_GRID, n = riverNoise(x, z);
+  const gx = (riverNoise(x + RIVER_STEP, z) - n) / RIVER_STEP, gz = (riverNoise(x, z + RIVER_STEP) - n) / RIVER_STEP;
+  tableX[k] = i; tableZ[k] = j;
+  return tableAcross[k] = n / Math.max(Math.sqrt(gx * gx + gz * gz), 0.5 / RIVER_WAVE);
+}
+// (The last square's corners are kept too: the next vertex along is mostly in the same one.)
+let cellI = NaN, cellJ = NaN, cornerA = 0, cornerB = 0, cornerC = 0, cornerD = 0;
+function riverAcross(x, z) {
+  const gx = x / RIVER_GRID, gz = z / RIVER_GRID, i = Math.floor(gx), j = Math.floor(gz), fx = gx - i, fz = gz - j;
+  if (i !== cellI || j !== cellJ) {
+    cornerA = riverCorner(i, j); cornerB = riverCorner(i + 1, j); cornerC = riverCorner(i, j + 1); cornerD = riverCorner(i + 1, j + 1);
+    cellI = i; cellJ = j;
+  }
+  const a = cornerA, b = cornerB, c = cornerC;
+  return a + (b - a) * fx + (c - a) * fz + (a - b - c + cornerD) * fx * fz;
+}
+const riverDistance = (x, z) => Math.abs(riverAcross(x, z));
+// The water's height at (x, z).
+const waterLevel = (x, z) => roadLevel(x, z) - VALLEY - RIVER_DROP;
+// The land's height at (x, z), `river` m from the middle of a river, cut down to its banks where
+// it's higher than they are; in the river, the banks carry on down to its bed: deepest in the
+// middle, uneven, with boulders.
+function riverBed(x, z, height, river) {
+  if (river >= RIVER_HALF + (HIGHEST + VALLEY + RIVER_DROP) / RIVER_BANK) return height;  // the banks are higher than any land here
+  const water = waterLevel(x, z), bank = water + RIVER_BANK * (river - RIVER_HALF);
+  let bed = bank;
+  if (bank < water + BOULDER_TOP) {  // (else above the tallest of the small boulders)
+    const middle = river / RIVER_HALF;
+    const boulder = Math.max(noise(x / BOULDER_WAVE, z / BOULDER_WAVE, 173) - 0.25, 0) / 0.75;
+    const floor = water - RIVER_DEPTH * (1 - 0.4 * middle * middle) + BED_BUMPS * noise(x / BED_WAVE, z / BED_WAVE, 172)
+      + BOULDERS * boulder * boulder;
+    bed = Math.max(bank, Math.min(floor, water + BOULDER_TOP));
+  }
+  if (river < RIVER_HALF + 1) bed = Math.max(bed, bigBoulder(x, z, water));
+  return Math.min(height, bed);
+}
+// The big boulder at (x, z), if there's one (see BIG_CELL): the height of its top there, a lumpy
+// dome; else -Infinity.
+function bigBoulder(x, z, water) {
+  const i = Math.floor(x / BIG_CELL), j = Math.floor(z / BIG_CELL);
+  if (random(i, j, 174) >= BIG_ODDS) return -Infinity;
+  const radius = BIG_RADIUS + BIG_RADIUS_MORE * random(i, j, 175);
+  const cx = (i + 0.25 + 0.5 * random(i, j, 176)) * BIG_CELL, cz = (j + 0.25 + 0.5 * random(i, j, 177)) * BIG_CELL;
+  const d = Math.hypot(x - cx, z - cz) / radius;
+  if (d >= 1) return -Infinity;
+  const centreRiver = riverDistance(cx, cz);
+  riverAcross(x, z);  // (back to this square's corners, for the next vertex)
+  if (centreRiver > RIVER_HALF - 1) return -Infinity;
+  const top = water + BIG_TOP + BIG_TOP_MORE * random(i, j, 178), foot = water - RIVER_DEPTH;
+  return foot + (top - foot) * Math.sqrt(1 - d * d) + 0.15 * noise(x / 0.9, z / 0.9, 179);
+}
+
+// The land's height above roadLevel at (x, z), away from any road; down to the valley floor
+// near a river.
+function relief(x, z, river = riverDistance(x, z)) {
   const hills = HILLS * layers(x / 220, z / 220, 3, 0.45, 30);
   const across = noise(x / RIDGE_WAVE, z / RIDGE_WAVE, 40) / RIDGE_WIDTH;  // 0 along a ridge's top
   const top = Math.max(1 - across * across, 0);
   const ridges = (RIDGE_HEIGHT + 20 * noise(x / 1600, z / 1600, 50)) * top * top;
   const spurAcross = noise(x / SPUR_WAVE, z / SPUR_WAVE, 45) / SPUR_WIDTH;
   const spur = Math.max(1 - spurAcross * spurAcross, 0);
-  return hills + ridges + SPUR_HEIGHT * spur * spur - VALLEY;
+  const valley = smoothstep(RIVER_HALF, RIVER_HALF + RIVER_VALLEY, river);
+  return (hills + ridges + SPUR_HEIGHT * spur * spur) * valley - VALLEY;
 }
 
 // Ground height at (x, z), `road` metres from the nearest road's edge, where that road is lifted
-// `lift` m above roadLevel.
-function landHeight(x, z, road, lift) {
+// `lift` m above roadLevel, and `river` m from the middle of a river.
+function landHeight(x, z, road, lift, river) {
   const level = roadLevel(x, z) + lift;
   if (road < VERGE) return level;
   // How far the land may stray from the road's level: not at all on the road and its verges,
@@ -739,7 +866,7 @@ function landHeight(x, z, road, lift) {
     wild = smoothstep(verge, verge + RISE, road);
     if (wild === 0) return level;
   }
-  return level + (relief(x, z) - lift) * wild;
+  return level + (relief(x, z, river) - lift) * wild;
 }
 
 // --- Bamboo ---
@@ -750,10 +877,13 @@ function landHeight(x, z, road, lift) {
 // and tint the far land as their tops; and level 0's chunks plant their stalks by it (plantBamboo).
 const GROVE_WAVE = 90, CLUMP_WAVE = 20;  // m: groves and clearings, and clumps within them
 const GROVE_FROM = 1, GROVE_TO = 5;      // m from the road's edge: none nearer; as thick as it gets from here
-function grove(x, z, road) {
+const GROVE_BANK = 2, GROVE_BANK_TO = 8;  // m from the water: none nearer; as thick as it gets from here
+function grove(x, z, road, river = riverDistance(x, z)) {
   if (road < GROVE_FROM) return 0;
+  const bank = smoothstep(RIVER_HALF + GROVE_BANK, RIVER_HALF + GROVE_BANK_TO, river);
+  if (bank === 0) return 0;
   const n = 0.7 * noise(x / GROVE_WAVE, z / GROVE_WAVE, 110) + 0.3 * noise(x / CLUMP_WAVE, z / CLUMP_WAVE, 111);
-  return smoothstep(-0.35, 0.2, n) * smoothstep(GROVE_FROM, GROVE_TO, road);  // ~1/5 clearings, ~2/5 thick
+  return smoothstep(-0.35, 0.2, n) * smoothstep(GROVE_FROM, GROVE_TO, road) * bank;  // ~1/5 clearings, ~2/5 thick
 }
 
 // Stalks: in each PLANT × PLANT m square of the world, one or none, at a random point in it, more
@@ -818,6 +948,8 @@ const SKIRT = 2;  // m per m between vertices
 const ROAD_PIECES = 176;
 const FRAY = 0.5;       // m: how far the road's painted edge wanders in and out
 const FRAY_WAVE = 2.5;  // m: roughly how far apart its bulges are
+const RIVER_CUT = 0.2;  // m: land cut down more than this by a river's banks (riverBed) isn't painted as road,
+const UNPAINTED = 8;    // m: but as this far from it
 
 // Vertex index of the t-th vertex along side 0 (z = 0), 1 (z = 30), 2 (x = 0) or 3 (x = 30).
 function edgeVertex(side, t) {
@@ -864,6 +996,10 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
         ready: false,        // all its rows built
         version: 0,          // goes up each time it's rebuilt, so main.js knows to re-upload it
         roads: createRoadList(ROAD_PIECES),
+        // Near a river, its water's layer: per vertex, the water's height in cm and how deep it is
+        // there (cm; negative above it, and -1000 away from the river), for water.vert; and whether
+        // any of it is near a river (else it has none to draw).
+        water: new Int16Array(VERTICES * 2), wet: false,
         // The first STALK_LEVELS levels': its bamboo (plantBamboo), STALK_FLOATS per stalk, a square
         // after another, how many stalks, and where each square's start (and after the last, end).
         stalks: level < STALK_LEVELS ? new Float32Array((size / PLANT) ** 2 * STALK_FLOATS) : null, stalkCount: 0,
@@ -944,6 +1080,7 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
       findRoads(slot.roads, slot.x - ROAD_REACH, slot.z - ROAD_REACH,
         slot.x + slot.size + ROAD_REACH, slot.z + slot.size + ROAD_REACH);
       slot.minY = Infinity; slot.maxY = -Infinity;
+      slot.wet = false;
       slot.rowsBuilt = 0;
     }
     const row = slot.rowsBuilt, z = row - 1;  // z: vertex row, from -1 to CHUNK_VERTS
@@ -957,7 +1094,8 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
       if ((x + 1) % STRETCH === 0) far = nearbyRoads(slot.roads, nearby, wx + (STRETCH - 1) / 2 * s, wz, (STRETCH - 1) / 2 * s) >= FAR;
       if (far) farFromRoads();
       else roadDistance(nearby, wx, wz);
-      const height = landHeight(wx, wz, found[LAND_EDGE], found[LIFT]);
+      const river = riverDistance(wx, wz), land = landHeight(wx, wz, found[LAND_EDGE], found[LIFT], river);
+      const height = riverBed(wx, wz, land, river);
       heights[row * BORDERED + x + 1] = height;
       if (x < 0 || x >= CHUNK_VERTS || z < 0 || z >= CHUNK_VERTS) continue;  // the border
       const cm = Math.min(Math.max(Math.round(height * 100), -32767), 32767);
@@ -967,8 +1105,23 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
       // sand wanders into the grass. (Only near it: further out, nothing is painted by it.)
       let edge = found[EDGE];
       if (edge < 8) edge += FRAY * noise(wx / FRAY_WAVE, wz / FRAY_WAVE, 80);
+      // Where a river's banks cut a road away (under a bridge), no road is painted.
+      if (height < land - RIVER_CUT) edge = Math.max(edge, UNPAINTED);
       v[o + 1] = Math.min(Math.max(Math.round(edge * 100), -32767), 32767);
-      v[o + 3] = Math.round(127 * grove(wx, wz, found[EDGE])) << 8;  // the grove; its normal's z joins it below
+      // The grove; its normal's z joins it below. In the river and on its wet banks, instead, how
+      // much riverbed it is, negative: -127 under the water, fading to 0 up the bank.
+      const bed = 1 - smoothstep(RIVER_HALF + WET_FROM, RIVER_HALF + WET_TO, river);
+      v[o + 3] = (bed > 0 ? -Math.round(127 * bed) : Math.round(127 * grove(wx, wz, found[EDGE], river))) << 8;
+      // The water's layer.
+      const w = (z * CHUNK_VERTS + x) * 2;
+      if (river < RIVER_HALF + WATER_REACH) {
+        const water = waterLevel(wx, wz);
+        slot.water[w] = Math.min(Math.max(Math.round(water * 100), -32767), 32767);
+        slot.water[w + 1] = Math.min(Math.max(Math.round((water - height) * 100), -1000), 32767);
+        slot.wet = true;
+      } else {
+        slot.water[w] = cm; slot.water[w + 1] = -1000;
+      }
       slot.minY = Math.min(slot.minY, cm / 100);
       slot.maxY = Math.max(slot.maxY, cm / 100);
     }
@@ -1066,8 +1219,10 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
         const x = (i + 0.2 + 0.6 * (where & 1023) / 1024) * CLUMP, z = (j + 0.2 + 0.6 * (where >>> 10 & 1023) / 1024) * CLUMP;
         const gx = Math.min(Math.floor(x / s), CHUNK_QUADS - 1), gz = Math.min(Math.floor(z / s), CHUNK_QUADS - 1);
         const fx = x / s - gx, fz = z / s - gz, o = (gz * CHUNK_VERTS + gx) * S;
-        const g0 = (v[o + 3] >> 8 & 255) + ((v[o + S + 3] >> 8 & 255) - (v[o + 3] >> 8 & 255)) * fx;
-        const g1 = (v[o + next + 3] >> 8 & 255) + ((v[o + next + S + 3] >> 8 & 255) - (v[o + next + 3] >> 8 & 255)) * fx;
+        // (The grove's byte, signed: -127 in the water, which grows nothing.)
+        const ga = Math.max(v[o + 3] >> 8, 0), gb = Math.max(v[o + S + 3] >> 8, 0);
+        const gc = Math.max(v[o + next + 3] >> 8, 0), gd = Math.max(v[o + next + S + 3] >> 8, 0);
+        const g0 = ga + (gb - ga) * fx, g1 = gc + (gd - gc) * fx;
         if ((where >>> 20 & 1023) / 1024 * 127 >= g0 + (g1 - g0) * fz) continue;
         const ea = v[o + 1], eb = v[o + S + 1], ec = v[o + next + 1], ed = v[o + next + S + 1];
         if (ea + (eb - ea) * fx + (ec - ea) * fz + (ea - eb - ec + ed) * fx * fz < 100 * CLUMP / 2) continue;  // cm from the road
@@ -1090,6 +1245,7 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
   // over. Chunks are wanted `ahead` m sooner, and not once they're `ahead` m inside where their
   // own children take over. (The distances worked out inline: as functions, returning numbers,
   // they made garbage.)
+  let dueIn = Infinity;  // m: how soon the last chunk mostDue found is needed
   function mostDue(x, z) {
     let soonest = Infinity, bestLevel = -1, bestX = 0, bestZ = 0;
     for (let level = 0; level <= top; level++) {
@@ -1117,6 +1273,7 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
         }
       }
     }
+    dueIn = soonest;
     if (bestLevel < 0) return null;
     const slot = slotAt(bestLevel, bestX, bestZ);
     if (slot.cx !== bestX || slot.cz !== bestZ) assign(slot, bestX, bestZ);
@@ -1126,9 +1283,16 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
   // What to draw from (x, z): into drawList (slot indices, nearest first), drawCount long. From
   // each top-level chunk within `draw`, down: a chunk gives way to its 4 children where the finer
   // level takes over, but only once they (or theirs) can all be drawn, so the land never has a
-  // hole while they're built. Where nothing can be drawn, the nearest such hole is noted.
+  // hole while they're built. Where nothing can be drawn, the nearest such hole that can be seen
+  // is noted: with `view` (the camera's view-volume planes), one some of which is inside it,
+  // however high or low its land turns out to be (LOWEST to HIGHEST: not much more, or the view
+  // volume, tilted down, would take in the bottoms of boxes behind the camera).
   const drawList = new Int32Array(slots.length), drawGap = new Float64Array(slots.length);
-  let drawCount = 0, holeGap = Infinity, holeLevel = 0, holeX = 0, holeZ = 0;
+  let drawCount = 0, holeGap = Infinity, holeLevel = 0, holeX = 0, holeZ = 0, view = null;
+  function inView(level, cx, cz) {
+    const size = levels[level].size, x0 = cx * size, z0 = cz * size;
+    return !view || boxInFrustum(view, x0, LOWEST, z0, x0 + size, HIGHEST, z0 + size);
+  }
   function covered(level, cx, cz, x, z) {
     if (built(level, cx, cz) || gap(level, cx, cz, x, z) >= draw) return true;
     if (level === 0) return false;
@@ -1153,7 +1317,7 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
       let k = drawCount++;
       for (; k > 0 && drawGap[k - 1] > d; k--) { drawList[k] = drawList[k - 1]; drawGap[k] = drawGap[k - 1]; }
       drawList[k] = slotAt(level, cx, cz).index; drawGap[k] = d;
-    } else if (d < holeGap) {
+    } else if (d < holeGap && inView(level, cx, cz)) {
       holeGap = d; holeLevel = level; holeX = cx; holeZ = cz;
     }
   }
@@ -1166,7 +1330,11 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
 
   // Keep the chunks around (x, z) built, the soonest needed first, a row at a time, for up to
   // `budget` ms; what's left carries on next frame. Then work out what to draw; and any hole in it
-  // nearer than `needed` m is filled at once, whatever the budget. Returns rows built.
+  // nearer than `needed` m is filled at once, whatever the budget: if `planes` (the camera's
+  // view-volume planes) are given, only those that can be seen, the rest as the budget allows. (So
+  // after a tow, which leaves the whole view a hole, about a third of them: the rest turn into view
+  // only as the car turns, a few a frame at most, while the budget builds them first.) Returns rows
+  // built.
   //
   // Chunks come into range by distance, not a whole row of them each time the camera crosses
   // into the next chunk, so a few at a time.
@@ -1174,20 +1342,29 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
   // And no more than ROWS_PER_MS rows per ms of budget. A row takes ~15 µs in Chrome, where the
   // clock stops it first (~66 rows in 1 ms). Firefox's clock is rounded to 1 ms, or much coarser
   // with its fingerprinting protection on: there, waiting for it to tick could build for many ms.
-  const ROWS_PER_MS = 100;
+  //
+  // When the building falls behind (the chunk needed soonest is due within half of `ahead`: a slower
+  // browser or machine, or a low frame rate), up to CATCH_UP times the budget, until it's caught up:
+  // the finer chunks carry the bamboo's stalks and the ground cover, which, late, would be seen
+  // arriving (asked for, 3 Oct 2026: "objects load in dramatically around me").
+  const ROWS_PER_MS = 100, CATCH_UP = 3;
   let behind = 0;  // holes filled past the budget, last update
-  function update(x, z, budget, needed = 0) {
-    const start = performance.now(), most = budget * ROWS_PER_MS;
-    let rows = 0, slot = null;
-    while (rows < most && performance.now() - start < budget) {
+  function update(x, z, budget, needed = 0, planes = null) {
+    findBridges(x, z);
+    findTrees(x, z);
+    const start = performance.now();
+    let rows = 0, slot = null, limit = budget;
+    while (rows < limit * ROWS_PER_MS && performance.now() - start < limit) {
       if (!slot || slot.ready) {
         slot = mostDue(x, z);
         if (!slot) break;  // all built
+        if (dueIn < ahead / 2) limit = budget * CATCH_UP;
       }
       buildRow(slot);
       rows++;
     }
     behind = 0;
+    view = planes;
     for (select(x, z); holeGap < needed; select(x, z)) {
       const hole = slotAt(holeLevel, holeX, holeZ);
       if (hole.cx !== holeX || hole.cz !== holeZ) assign(hole, holeX, holeZ);
@@ -1233,6 +1410,226 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
     return h;
   }
 
+  // --- Bridges ---
+  //
+  // Wherever a road crosses a river, a bridge: a deck along the road, piece by piece, over every
+  // piece where the banks cut into the road (riverBed) and one more each end, each corner as high as
+  // the road there (and BRIDGE_LIFT above), so it carries straight on. Found among the roads within
+  // BRIDGE_REACH m of the camera, again each time it has moved BRIDGE_REFRESH m. Each: where it
+  // crosses the river's middle (cx, cz; or, if it only runs along the bank, `crosses` false, where
+  // it was found), the water's height there, the half-width of its deck, its corners (x, y, z, ...:
+  // the top of its deck at the middle of the road; `drive` the same without its sunk ends, for the car) and its box (x0, z0, x1, z1).
+  const bridges = [];
+  let bridgesVersion = 0, bridgeX = NaN, bridgeZ = NaN;
+  const bridgeRoads = createRoadList(20000);
+  // Does the river cut into the road at (x, z), `half` m either side of its middle, `lift` m above
+  // roadLevel?
+  function riverCuts(x, z, half, lift) {
+    const river = riverDistance(x, z) - half;
+    return river < RIVER_HALF || waterLevel(x, z) + RIVER_BANK * (river - RIVER_HALF) < roadLevel(x, z) + lift + BRIDGE_CLEAR;
+  }
+  function findBridges(x, z) {
+    if (Math.hypot(x - bridgeX, z - bridgeZ) < BRIDGE_REFRESH) return;
+    bridgeX = x; bridgeZ = z;
+    const reach = BRIDGE_REACH + BRIDGE_LONGEST;
+    findRoads(bridgeRoads, x - reach, z - reach, x + reach, z + reach);
+    const pieces = bridgeRoads.pieces, end = bridgeRoads.pieceCount * PIECE, fresh = [];
+    // Does piece q carry straight on from piece p (the next piece of the same road)?
+    // (Its start is this one's end, but not exactly: the sum is rounded.)
+    const joined = (p, q) => q >= 0 && q < end
+      && Math.abs(pieces[p] + pieces[p + 2] - pieces[q]) + Math.abs(pieces[p + 1] + pieces[p + 3] - pieces[q + 1]) < 1e-6;
+    let bridgedTo = -1;  // pieces up to here are on a bridge already (a road crossing a river twice, close together)
+    for (let r = 0; r < end; r += PIECE) {
+      if (r <= bridgedTo) continue;
+      const x0 = pieces[r], z0 = pieces[r + 1], dx = pieces[r + 2], dz = pieces[r + 3], half = pieces[r + 7];
+      const n0 = riverAcross(x0, z0), n1 = riverAcross(x0 + dx, z0 + dz), crosses = (n0 < 0) !== (n1 < 0);
+      // A road can also come close enough to a river, without crossing it, for its banks to cut in.
+      if (!crosses && !riverCuts(x0 + dx, z0 + dz, half, pieces[r + 12])) continue;
+      // Back to the first piece whose start the river doesn't cut, and on to the last whose end it
+      // doesn't (or as far as BRIDGE_LONGEST / 2 each way, or the road's end).
+      let first = r, last = r;
+      for (let n = 0; n < BRIDGE_LONGEST / 2 / PIECE_LENGTH && joined(first - PIECE, first)
+        && riverCuts(pieces[first], pieces[first + 1], half, pieces[first + 5]); n++) first -= PIECE;
+      for (let n = 0; n < BRIDGE_LONGEST / 2 / PIECE_LENGTH && joined(last, last + PIECE)
+        && riverCuts(pieces[last] + pieces[last + 2], pieces[last + 1] + pieces[last + 3], half, pieces[last + 12]); n++) last += PIECE;
+      bridgedTo = last;
+      // Where it crosses the river's middle, if it does.
+      let cx = x0 + dx, cz = z0 + dz, over = false;
+      for (let p = first; p <= last && !over; p += PIECE) {
+        const a = riverAcross(pieces[p], pieces[p + 1]), b = riverAcross(pieces[p] + pieces[p + 2], pieces[p + 1] + pieces[p + 3]);
+        if ((a < 0) === (b < 0)) continue;
+        over = true;
+        cx = pieces[p] + a / (a - b) * pieces[p + 2]; cz = pieces[p + 1] + a / (a - b) * pieces[p + 3];
+      }
+      if (Math.max(Math.abs(cx - x), Math.abs(cz - z)) > BRIDGE_REACH) continue;
+      const corners = [];
+      let x0b = Infinity, z0b = Infinity, x1b = -Infinity, z1b = -Infinity;
+      for (let p = first; p <= last + PIECE; p += PIECE) {
+        const atEnd = p > last, q = atEnd ? last : p;
+        const px = pieces[q] + (atEnd ? pieces[q + 2] : 0), pz = pieces[q + 1] + (atEnd ? pieces[q + 3] : 0);
+        corners.push(px, roadLevel(px, pz) + pieces[q + (atEnd ? 12 : 5)] + BRIDGE_LIFT, pz);
+        x0b = Math.min(x0b, px); z0b = Math.min(z0b, pz); x1b = Math.max(x1b, px); z1b = Math.max(z1b, pz);
+      }
+      // Into the road at each end (see BRIDGE_SINK): on from the end corner, away from the next.
+      const sink = (k, from) => {
+        const ex = corners[k] - corners[from], ez = corners[k + 2] - corners[from + 2], length = Math.hypot(ex, ez);
+        const px = corners[k] + ex / length * BRIDGE_SINK_REACH, pz = corners[k + 2] + ez / length * BRIDGE_SINK_REACH;
+        x0b = Math.min(x0b, px); z0b = Math.min(z0b, pz); x1b = Math.max(x1b, px); z1b = Math.max(z1b, pz);
+        return [px, corners[k + 1] + roadLevel(px, pz) - roadLevel(corners[k], corners[k + 2]) - BRIDGE_LIFT - BRIDGE_SINK, pz];
+      };
+      const before = sink(0, 3), after = sink(corners.length - 3, corners.length - 6);
+      corners.unshift(...before);
+      corners.push(...after);
+      const drive = corners.slice();
+      drive[1] += BRIDGE_LIFT + BRIDGE_SINK; drive[drive.length - 2] += BRIDGE_LIFT + BRIDGE_SINK;
+      const reachOut = (half + BRIDGE_WIDER) * BRIDGE_NARROW;
+      fresh.push({ cx, cz, crosses: over, water: waterLevel(cx, cz), half: reachOut, corners, drive,
+        x0: x0b - reachOut, z0: z0b - reachOut, x1: x1b + reachOut, z1: z1b + reachOut });
+    }
+    // Only a new list if it's changed, so main.js rebuilds the mesh only then.
+    const same = fresh.length === bridges.length && fresh.every((f, k) => f.cx === bridges[k].cx && f.cz === bridges[k].cz);
+    if (same) return;
+    bridges.length = 0;
+    bridges.push(...fresh);
+    bridgesVersion++;
+  }
+
+  // --- Trees ---
+  //
+  // Groups of trees (trees.js draws them): cherries in blossom, or broadleaf trees (the model in
+  // assets/tree_01), now and then a lone one. In each GROUP_CELL m square, one in GROUP_ODDS has a
+  // group, round a random point in its middle, if that's near enough a road or a river's bank to be
+  // seen from the drive: 1 to GROUP_MOST trees within GROUP_RADIUS m of it, at least TREE_APART m
+  // apart, each where it can stand: out of the river, off the road, not in thick bamboo (cherries
+  // in a clearing: their crowns are wide), and on fairly level ground. One in CHERRY_ODDS groups is
+  // cherries, one in MAPLE_ODDS maples in autumn red (both made by trees.js); the rest broadleaf
+  // (the tree_01 model's). Found within TREE_REACH m of the camera (beyond the mist's end),
+  // again every TREE_REFRESH m it moves; each square worked out once, and kept while it's near.
+  // Each tree: where it stands (x, y, z), its kind ('cherry', 'maple' or 'broadleaf'), a number its shape
+  // grows from (seed), and for a cherry or maple, the ground's height round it (ground: TREE_GROUND ×
+  // TREE_GROUND points TREE_GROUND_STEP m apart, centred on it), for the petals or leaves fallen on it.
+  const CHERRY_MOST = 4;
+  const GROUP_CELL = 35, GROUP_ODDS = 0.8, GROUP_RADIUS = 12, GROUP_MOST = 8, TREE_APART = 4.5;  // m, -, m, -, m
+  const CHERRY_ODDS = 0.25, MAPLE_ODDS = 0.12, TREE_REACH = 450, TREE_REFRESH = 50;
+  const TREE_ROAD_FROM = 3, TREE_ROAD_TO = 30, TREE_BANK_TO = 20;  // m from the road's edge; from the water's edge (a group's middle)
+  const CHERRY_GROVE = 0.15, BROADLEAF_GROVE = 0.5, TREE_CLEAR = 3.5;  // the thickest bamboo where each stands; m round a cherry
+  const TREE_SLOPE = 1.2;  // m of rise across 4 m at most
+  const TREE_GROUND = 11, TREE_GROUND_STEP = 1.5;  // (± 7.5 m: a cherry's petals reach 7)
+  const trees = [], treeCells = new Map();
+  let treesVersion = 0, treeX = NaN, treeZ = NaN;
+  const treeRoads = createRoadList(ROAD_PIECES);
+  // The land's height at (x, z), as buildRow works it out, from the roads in treeRoads; leaves
+  // what roadDistance found there in `found`.
+  function treeGround(x, z) {
+    if (treeRoads.pieceCount) roadDistance(treeRoads, x, z);
+    else farFromRoads();
+    const river = riverDistance(x, z);
+    return riverBed(x, z, landHeight(x, z, found[LAND_EDGE], found[LIFT], river), river);
+  }
+  // A tree of `kind` at (x, z), if it can stand there; else null.
+  function treeAt(x, z, kind, seed) {
+    const river = riverDistance(x, z);
+    if (river < RIVER_HALF + 3) return null;
+    const y = treeGround(x, z), edge = found[EDGE];
+    if (edge < TREE_ROAD_FROM) return null;
+    const cherry = kind === 'cherry';
+    if (grove(x, z, edge, river) > (cherry ? CHERRY_GROVE : BROADLEAF_GROVE)) return null;
+    if (cherry) {
+      for (let k = 0; k < 6; k++) {
+        const a = k * Math.PI / 3, px = x + TREE_CLEAR * Math.cos(a), pz = z + TREE_CLEAR * Math.sin(a);
+        if (grove(px, pz, Math.max(edge - TREE_CLEAR, 0), riverDistance(px, pz)) > 0.45) return null;
+      }
+    }
+    const rise = Math.max(Math.abs(treeGround(x - 2, z) - treeGround(x + 2, z)), Math.abs(treeGround(x, z - 2) - treeGround(x, z + 2)));
+    if (rise > TREE_SLOPE) return null;
+    const tree = { x, y, z, kind, seed };
+    if (cherry || kind === 'maple') {
+      const ground = new Float32Array(TREE_GROUND * TREE_GROUND), half = (TREE_GROUND - 1) / 2;
+      for (let b = 0; b < TREE_GROUND; b++) {
+        for (let a = 0; a < TREE_GROUND; a++) ground[b * TREE_GROUND + a] = treeGround(x + (a - half) * TREE_GROUND_STEP, z + (b - half) * TREE_GROUND_STEP);
+      }
+      Object.assign(tree, { ground, groundStep: TREE_GROUND_STEP, groundSize: TREE_GROUND });
+    }
+    return tree;
+  }
+  // The group in square (i, j), if it has one: its trees (some may be none: an empty list).
+  function groupIn(i, j) {
+    if (random(i, j, 180) >= GROUP_ODDS) return [];
+    const cx = (i + 0.25 + 0.5 * random(i, j, 181)) * GROUP_CELL, cz = (j + 0.25 + 0.5 * random(i, j, 182)) * GROUP_CELL;
+    const reach = ROAD_REACH + GROUP_RADIUS;
+    findRoads(treeRoads, cx - reach, cz - reach, cx + reach, cz + reach);
+    if (treeRoads.pieceCount) roadDistance(treeRoads, cx, cz);
+    else farFromRoads();
+    if (found[EDGE] > TREE_ROAD_TO && riverDistance(cx, cz) > RIVER_HALF + TREE_BANK_TO) return [];
+    const pick = random(i, j, 183);
+    const kind = pick < CHERRY_ODDS ? 'cherry' : pick < CHERRY_ODDS + MAPLE_ODDS ? 'maple' : 'broadleaf';
+    // Mostly small groups, now and then a big one or a lone tree; cherries in smaller ones (they're
+    // the costliest to draw: ~0.2 ms each in headless Chrome at 1280 × 720).
+    const count = 1 + Math.floor((kind === 'broadleaf' ? GROUP_MOST : CHERRY_MOST) * random(i, j, 184) ** 1.5);
+    const group = [];
+    for (let k = 0; k < count * 2 && group.length < count; k++) {
+      const a = random(i, j, 190 + 2 * k) * 2 * Math.PI, r = k === 0 ? 0 : GROUP_RADIUS * Math.sqrt(random(i, j, 191 + 2 * k));
+      const x = cx + r * Math.cos(a), z = cz + r * Math.sin(a);
+      if (group.some(t => Math.hypot(t.x - x, t.z - z) < TREE_APART)) continue;
+      const tree = treeAt(x, z, kind, hash(i, j, 220 + k));
+      if (tree) group.push(tree);
+    }
+    return group;
+  }
+  function findTrees(x, z) {
+    if (Math.hypot(x - treeX, z - treeZ) < TREE_REFRESH) return;
+    treeX = x; treeZ = z;
+    const i0 = Math.floor((x - TREE_REACH) / GROUP_CELL), i1 = Math.floor((x + TREE_REACH) / GROUP_CELL);
+    const j0 = Math.floor((z - TREE_REACH) / GROUP_CELL), j1 = Math.floor((z + TREE_REACH) / GROUP_CELL);
+    const fresh = [];
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const key = i * 1e6 + j;
+        let group = treeCells.get(key);
+        if (group === undefined) treeCells.set(key, group = groupIn(i, j));
+        for (const tree of group) if (Math.hypot(tree.x - x, tree.z - z) < TREE_REACH) fresh.push(tree);
+      }
+    }
+    // Forget squares well behind.
+    for (const key of treeCells.keys()) {
+      const i = Math.round(key / 1e6), j = key - i * 1e6;
+      if (Math.abs((i + 0.5) * GROUP_CELL - x) > 2 * TREE_REACH || Math.abs((j + 0.5) * GROUP_CELL - z) > 2 * TREE_REACH) treeCells.delete(key);
+    }
+    if (fresh.length === trees.length && fresh.every((t, k) => t === trees[k])) return;
+    trees.length = 0;
+    trees.push(...fresh);
+    treesVersion++;
+  }
+
+  // The ground's height at (x, z), as heightAt finds it, or a bridge's deck there if that's higher:
+  // what the car drives on. Its normal too, if `normal` is given.
+  function groundAt(wx, wz, normal) {
+    let h = heightAt(wx, wz, normal);
+    const deck = (c, i, along, length, dx, dz) => {
+      const grade = (c[i + 4] - c[i + 1]) / length;
+      if (normal) {
+        const n = Math.sqrt(grade * grade + 1);
+        normal[0] = -grade * dx / length / n; normal[1] = 1 / n; normal[2] = -grade * dz / length / n;
+      }
+      return c[i + 1] + grade * along;
+    };
+    for (let k = 0; k < bridges.length; k++) {
+      const b = bridges[k];
+      if (wx < b.x0 || wx > b.x1 || wz < b.z0 || wz > b.z1) continue;
+      const c = b.drive;  // (not its sunk ends: see BRIDGE_SINK)
+      for (let i = 0; i + 3 < c.length; i += 3) {
+        const dx = c[i + 3] - c[i], dz = c[i + 5] - c[i + 2], length = Math.sqrt(dx * dx + dz * dz);
+        const px = wx - c[i], pz = wz - c[i + 2], along = (px * dx + pz * dz) / length;
+        // (And a metre on past each joint, where the pieces leave a wedge between them on a bend.)
+        const from = i === 0 ? 0 : -1, to = i + 6 >= c.length ? length : length + 1;
+        if (along < from || along > to || Math.abs(px * dz - pz * dx) / length > b.half) continue;
+        const top = c[i + 1] + (c[i + 4] - c[i + 1]) * along / length;
+        if (top > h) h = deck(c, i, along, length, dx, dz);
+      }
+    }
+    return h;
+  }
+
   // How far (x, z) is from the road's edge as drawn: frayed (see buildRow), and blended across each
   // grid square's two triangles, as the GPU blends vEdge. Negative on the road. For the puddles
   // (painted only more than 0.8 m in from it), which the tyres splash through.
@@ -1247,22 +1644,33 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
   }
 
   // The nearest point on any road's middle to (x, z), and the heading along the road there
-  // (either way), as { x, z, heading }. The same object is reused by the next call to
-  // nearestRoad, and only by that: copy it before calling again.
-  const near = { x: 0, z: 0, heading: 0 };
+  // (either way), as { x, z, heading }; NaN if there's no road within two cells (none was ever
+  // found: 3,200 m each way takes several roadless nodes side by side). The same object is reused
+  // by the next call to nearestRoad, and only by that: copy it before calling again.
+  const near = { x: NaN, z: NaN, heading: NaN };
   const searchList = createRoadList(20000);  // two cells each way: ~60 roads of ~150 pieces
   function nearestRoad(x, z) {
     // The chunk's own road list has every road within WILD m of it: if one is that close, it's
     // the nearest. (The distance returned can be up to ROAD_ROUNDING / 4 short.) Otherwise
-    // search the cells around.
+    // search the cells around: one each way, or two if no road comes within one (a road found
+    // further away than the square searched reaches might not be the nearest; 9 places in
+    // 40,000, one with none at all, before 1 Oct 2026, which towed the car to NaN).
     const cx = Math.floor(x / CHUNK_QUADS), cz = Math.floor(z / CHUNK_QUADS), slot = slotFor(cx, cz);
-    let list = slot.roads;
-    if (slot.cx !== cx || slot.cz !== cz || slot.rowsBuilt < 0 || !(roadDistance(list, x, z) < WILD - 5)) {
-      list = searchList;
-      findRoads(list, x - CELL, z - CELL, x + CELL, z + CELL);
-      roadDistance(list, x, z);
+    if (slot.cx === cx && slot.cz === cz && slot.rowsBuilt >= 0 && roadDistance(slot.roads, x, z) < WILD - 5) {
+      return nearestOn(slot.roads, x, z);
     }
-    // The nearest point on the nearest record, as roadDistance found it.
+    for (let reach = CELL; reach <= 2 * CELL; reach += CELL) {
+      findRoads(searchList, x - reach, z - reach, x + reach, z + reach);
+      roadDistance(searchList, x, z);
+      if (nearestPiece < 0) continue;
+      nearestOn(searchList, x, z);
+      if (Math.hypot(near.x - x, near.z - z) <= reach) break;
+    }
+    if (nearestPiece < 0) near.x = near.z = near.heading = NaN;
+    return near;
+  }
+  // The nearest point on the nearest record of `list`, as roadDistance just found it, into `near`.
+  function nearestOn(list, x, z) {
     const pieces = list.pieces, r = nearestPiece;
     const dx = pieces[r + 2], dz = pieces[r + 3];
     const t = Math.min(Math.max(((x - pieces[r]) * dx + (z - pieces[r + 1]) * dz) * pieces[r + 4], 0), 1);
@@ -1280,6 +1688,13 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
     return roadDistance(slot.roads, x, z);
   }
 
-  return { slots, indices, update, heightAt, edgeAt, nearestRoad, roadDistanceAt, slotFor, slotAt, drawList,
+  // The water's height at (x, z), if it's in a river (or just past its edge); else -Infinity. For
+  // the car, which the water slows (car.js).
+  function waterAt(x, z) {
+    return riverDistance(x, z) < RIVER_HALF + 1 ? waterLevel(x, z) : -Infinity;
+  }
+
+  return { slots, indices, update, heightAt, groundAt, waterAt, edgeAt, bridges, get bridgesVersion() { return bridgesVersion; },
+           trees, get treesVersion() { return treesVersion; }, nearestRoad, roadDistanceAt, slotFor, slotAt, drawList,
            get drawCount() { return drawCount; }, get behind() { return behind; } };
 }

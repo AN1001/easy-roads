@@ -147,6 +147,9 @@ export function createBamboo(terrain, far) {
   const moving = new Int32Array(MAX_MOVING), isMoving = new Uint8Array(level0 * MAX_STALKS);
   const movingIn = new Int32Array(level0);  // per level-0 slot: how many of its stalks are moving
   let movingCount = 0;
+  // This frame's: how far the car pushed stalks aside, all told (radians), and how many it reached
+  // that were standing still (for the rustle and knocks in sound.js).
+  let pushed = 0, struck = 0;
 
   // Per square: where it swaps its stalks for its clump (m), set as it's planted; and this frame's
   // share (see share). Per slot: those shares' sum and the frame it's for; the last frame the land
@@ -160,6 +163,7 @@ export function createBamboo(terrain, far) {
   // and headlight (the Frame block's); `dt`: s since the last frame.
   function bend(tail, lamp, dt) {
     const stiff = SPRING * SPRING, damp = 2 * DAMPING * SPRING;
+    pushed = 0; struck = 0;
     for (let m = 0; m < movingCount; m++) {
       const s = moving[m], o = 4 * s;
       let bx = bends[o], bz = bends[o + 1], vx = bends[o + 2], vz = bends[o + 3];
@@ -196,11 +200,13 @@ export function createBamboo(terrain, far) {
             isMoving[s] = 1;
             movingIn[slot.index]++;
             moving[movingCount++] = s;
+            struck++;
           }
           if (gap > 1e-3) { awayX /= gap; awayZ /= gap; } else { awayX = 1; awayZ = 0; }
           // Leaning away at least this much, and not still moving back towards the car.
           const need = (CAR_REACH - gap) / CAR_HEIGHT, along = bends[o] * awayX + bends[o + 1] * awayZ;
           if (along < need) {
+            pushed += need - along;
             bends[o] += awayX * (need - along); bends[o + 1] += awayZ * (need - along);
             const speed = bends[o + 2] * awayX + bends[o + 3] * awayZ;
             if (speed < 0) { bends[o + 2] -= awayX * speed; bends[o + 3] -= awayZ * speed; }
@@ -403,6 +409,6 @@ export function createBamboo(terrain, far) {
     // how long it is, all told.
     get near() { return nearCount; }, get far() { return farCount; }, get clumps() { return clumpCount; },
     farFrom: NEAR_ROOM, get clumpsFrom() { return NEAR_ROOM + farCount; }, get length() { return NEAR_ROOM + farCount + clumpCount; },
-    get moving() { return movingCount; },
+    get moving() { return movingCount; }, get pushed() { return pushed; }, get struck() { return struck; },
   };
 }

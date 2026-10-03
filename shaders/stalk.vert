@@ -42,10 +42,11 @@ void main() {
   vUV = vec2((look.y + around) * CULM_STRIP, h * CULM_TEXELS_PER_METRE) / TEXTURE_SIZE;
   float age = stalkRandom();
   vec3 tint = mix(YOUNG, OLD, age * age);
-  // Lit by the dusk and the headlight; wet, so seen at a glancing angle its edges shine with the sky.
+  // Lit by the daylight and the headlight; glossy, and more so wet, so seen at a glancing angle its
+  // edges shine with the sky.
   vec3 toCamera = normalize(uCamera.xyz - pos);
-  float sheen = 0.35 * pow(1.0 - max(dot(normal, toCamera), 0.0), 3.0), misted = mist(pos);
-  vec3 light = dusk(normal) + LAMP_COLOR * headlight(pos, normal);
+  float sheen = (0.15 + 0.2 * uWeather.x) * pow(1.0 - max(dot(normal, toCamera), 0.0), 3.0), misted = mist(pos);
+  vec3 light = daylight(normal) + LAMP_COLOR * headlight(pos, normal);
   vScale = tint * 2.0 * light * (1.0 - sheen) * (1.0 - misted);
   vAdd = skyColor(reflect(-toCamera, normal)) * sheen * (1.0 - misted) + mistColor(pos) * misted;
   gl_Position = uViewProj * vec4(pos, 1.0);

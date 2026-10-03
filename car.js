@@ -2,7 +2,7 @@
 
 import { parseObj } from './obj.js';
 import { GRAVITY, createBody, placeBody, applyImpulse, velocityAt, responseAt, integrate,
-  collideWithGround } from './physics.js';
+  collideWithGround, collideWithWall } from './physics.js';
 
 // --- Model ---
 
@@ -77,6 +77,9 @@ const MAX_REVERSE = 8;       // m/s
 const BRAKES = 12000;        // N, all four wheels together
 const ENGINE_BRAKING = 1500; // N, back wheels, off the throttle. Also holds the car on gentle slopes
 const ROLLING = 0.015;       // rolling resistance, × a tyre's load
+// In a river, the water holds the car back: its speed falls off at up to WATER_DRAG a second
+// (fully, once it's WATER_DEEP m in, measured up from WATER_FROM m below the centre of mass).
+const WATER_DRAG = 1.6, WATER_FROM = 0.6, WATER_DEEP = 1.0;
 const AIR_DRAG = 6.5;        // N per (m/s)²: against ENGINE, a top speed of ~30 m/s (108 km/h)
 const MAX_STEER = 0.5;       // rad (~29°): front wheels at full lock, at low speed
 const STEER_FADE = 10;       // m/s: full lock halves by this speed, thirds by twice it, and so on
@@ -97,8 +100,16 @@ const HULL = [
   .concat(WHEELS.map(([x, y, z]) => [x, y + BUMP - WHEEL_RADIUS, z]));
 // As offsets from the centre of mass, in one flat array: x, y, z, x, y, z, ...
 const HULL_POINTS = new Float64Array(HULL.flatMap(([x, y, z]) => [x - CENTRE_X, y - CENTRE_Y, z - CENTRE_Z]));
+// For walls, more: along the bumpers and down the sides, at most 0.7 m apart, so nothing as wide as
+// a tree's trunk is to them (trees.js: 0.72 m across at least) can slip between them.
+const WALL_POINTS = new Float64Array([...HULL_POINTS, ...[
+  [0, 0.55, 1.98], [0.37, 0.55, 1.96], [-0.37, 0.55, 1.96],      // front bumper
+  [0, 0.55, -1.92], [0.35, 0.55, -1.9], [-0.35, 0.55, -1.9],     // back bumper
+  ...[1.65, 1.3, 0.7, 0.1, -0.5, -1.2, -1.6].flatMap(z => [[0.77, 0.6, z], [-0.77, 0.6, z]]),  // the sides
+].flatMap(([x, y, z]) => [x - CENTRE_X, y - CENTRE_Y, z - CENTRE_Z])]);
 const HULL_BOUNCE = 0.3;    // a panel hitting the ground keeps 30% of its speed
 const HULL_FRICTION = 0.5;  // and slides with this much friction
+const WALL_BOUNCE = 0.2, WALL_FRICTION = 0.3;  // against a wall: a dull knock, and it scrapes along
 
 // Each frame is split into equal physics steps no longer than this. Springs and collisions need
 // short steps to stay stable; 120 a second is 2–3 steps per frame at 50–60 fps.
@@ -143,8 +154,11 @@ export function resetCar(car, heightAt) {
 }
 
 // throttle, brake, handbrake: 0 or 1. steer: -1 (right) to 1 (left). dt: seconds since the last
-// frame.
-export function updateCar(car, throttle, brake, handbrake, steer, dt, heightAt) {
+// frame. heightAt: the ground (terrain.js's groundAt); wallAt, if given, the bridges' railings
+// (bridges.js's bridgeWall) and the trees' trunks (trees.js's treeWall), which the body's points
+// (WALL_POINTS) bump against; waterAt, if given, the
+// rivers' water (terrain.js's waterAt: its height, or -Infinity), which slows it.
+export function updateCar(car, throttle, brake, handbrake, steer, dt, heightAt, wallAt = null, waterAt = null) {
   const a = car.body.axes, v = car.body.velocity;
   // Stuck on its side or roof, or leaning on a steep bank (tilted over 60°): after a moment, set
   // it back on its wheels where it is.
@@ -168,7 +182,10 @@ export function updateCar(car, throttle, brake, handbrake, steer, dt, heightAt) 
   const brakes = car.braking || holding ? BRAKES : 0;
 
   const steps = Math.ceil(dt / MAX_STEP);
-  for (let i = 0; i < steps; i++) step(car, drive, brakes, handbrake, dt / steps, heightAt);
+  const p = car.body.position;
+  const water = waterAt ? waterAt(p[0], p[2]) : -Infinity;
+  const wading = Math.min(Math.max((water - p[1] + WATER_FROM) / WATER_DEEP, 0), 1);
+  for (let i = 0; i < steps; i++) step(car, drive, brakes, handbrake, dt / steps, heightAt, wallAt, wading);
 
   for (let i = 0; i < 4; i++) {
     const wheel = car.wheels[i];
@@ -180,11 +197,11 @@ export function updateCar(car, throttle, brake, handbrake, steer, dt, heightAt) 
 }
 
 // One physics step of h seconds.
-function step(car, drive, brakes, handbrake, h, heightAt) {
+function step(car, drive, brakes, handbrake, h, heightAt, wallAt, wading = 0) {
   const body = car.body, a = body.axes, p = body.position, v = body.velocity;
 
-  // Air resistance, against the direction of travel.
-  const drag = AIR_DRAG * Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) * body.invMass * h;
+  // Air resistance, against the direction of travel; and the water's, wading through a river.
+  const drag = AIR_DRAG * Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) * body.invMass * h + WATER_DRAG * wading * h;
   v[0] -= v[0] * drag; v[1] -= v[1] * drag; v[2] -= v[2] * drag;
 
   for (let i = 0; i < 4; i++) {
@@ -204,8 +221,19 @@ function step(car, drive, brakes, handbrake, h, heightAt) {
       heightAt, HULL_BOUNCE, HULL_FRICTION, normal);
     if (depth > deepest) { deepest = depth; outX = normal[0]; outY = normal[1]; outZ = normal[2]; }
   }
+  // The same for walls, which stop the body as a bump: pushed out sideways by the deepest point.
+  let wallDepth = 0, wallX = 0, wallY = 0, wallZ = 0;
+  if (wallAt) {
+    for (let i = 0; i < WALL_POINTS.length; i += 3) {
+      const x = WALL_POINTS[i], y = WALL_POINTS[i + 1], z = WALL_POINTS[i + 2];
+      const depth = collideWithWall(body,
+        a[0] * x + a[3] * y + a[6] * z, a[1] * x + a[4] * y + a[7] * z, a[2] * x + a[5] * y + a[8] * z,
+        wallAt, WALL_BOUNCE, WALL_FRICTION, normal);
+      if (depth > wallDepth) { wallDepth = depth; wallX = normal[0]; wallY = normal[1]; wallZ = normal[2]; }
+    }
+  }
   integrate(body, h);
-  p[0] += deepest * outX; p[1] += deepest * outY; p[2] += deepest * outZ;
+  p[0] += deepest * outX + wallDepth * wallX; p[1] += deepest * outY + wallDepth * wallY; p[2] += deepest * outZ + wallDepth * wallZ;
 }
 
 const normal = new Float64Array(3), vel = new Float64Array(3);  // scratch

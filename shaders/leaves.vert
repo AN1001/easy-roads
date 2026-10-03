@@ -3,7 +3,7 @@
 // and turned by the stalk's own random angle, far off one facing the camera, with a picture of the 3
 // seen from the side (textures.js); from LEAVES_FROM of its
 // height to just over its top, and moved with it by bamboo.glsl. Their outer edges flutter. Lit
-// by the dusk and the headlight, and misted, at the corners (per pixel measured 28% dearer).
+// by the daylight and the headlight, and misted, at the corners (per pixel measured 28% dearer).
 
 #include "frame.glsl"
 #include "bamboo.glsl"
@@ -42,7 +42,7 @@ void main() {
   // Lit mostly from above, and more from the side they reach out towards.
   vec3 normal = normalize(vec3(0.6 * out2.x, 1.0, 0.6 * out2.y));
   float misted = mist(vWorldPos);
-  vScale = LEAF * 2.0 * (dusk(normal) + LAMP_COLOR * headlight(vWorldPos, normal)) * (1.0 - misted);
+  vScale = LEAF * 2.0 * (daylight(normal) + LAMP_COLOR * headlight(vWorldPos, normal)) * (1.0 - misted);
   vAdd = mistColor(vWorldPos) * misted;
   vUV = vec2(0.5 + 0.5 * across, up);
   int shift = int(random * 16.0);

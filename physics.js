@@ -119,12 +119,29 @@ export function collideWithGround(body, rx, ry, rz, heightAt, bounce, friction, 
   if (below <= 0) return 0;
   // Straight out of a slope is shorter than straight up: a point 1 m below a cliff's surface
   // may be only a few cm inside it. Pushed up instead, the car would pop up onto the cliff.
-  const nx = normal[0], ny = normal[1], nz = normal[2];
-  const depth = below * ny;
+  const depth = below * normal[1];
+  resolveContact(body, rx, ry, rz, normal, bounce, friction);
+  return depth;
+}
 
+// Keep one point of the body, at offset r from its centre, out of a wall (any solid thing beside
+// it): `wallAt(x, y, z, normal)` says how deep in it a point is, and the way out (into `normal`).
+// The same impulses as for the ground. Returns the depth, or 0; the caller pushes the body out.
+export function collideWithWall(body, rx, ry, rz, wallAt, bounce, friction, normal) {
+  const p = body.position;
+  const depth = wallAt(p[0] + rx, p[1] + ry, p[2] + rz, normal);
+  if (depth > 0) resolveContact(body, rx, ry, rz, normal, bounce, friction);
+  return depth;
+}
+
+// A point at offset r touching something whose surface faces `normal` (unit): if it's moving into
+// it, stop it (bouncing back `bounce` of its speed), and resist its sliding along the surface, up to
+// `friction` × that impulse.
+function resolveContact(body, rx, ry, rz, normal, bounce, friction) {
+  const nx = normal[0], ny = normal[1], nz = normal[2];
   velocityAt(body, rx, ry, rz, pointVel);
   const into = pointVel[0] * nx + pointVel[1] * ny + pointVel[2] * nz;  // < 0: into the ground
-  if (into >= 0) return depth;
+  if (into >= 0) return;
   const e = into < -BOUNCE_MIN_SPEED ? bounce : 0;
   const push = -(1 + e) * into / responseAt(body, rx, ry, rz, nx, ny, nz);
   applyImpulse(body, rx, ry, rz, push * nx, push * ny, push * nz);
@@ -139,5 +156,4 @@ export function collideWithGround(body, rx, ry, rz, heightAt, bounce, friction, 
     const drag = Math.min(slide / responseAt(body, rx, ry, rz, sx, sy, sz), friction * push);
     applyImpulse(body, rx, ry, rz, -drag * sx, -drag * sy, -drag * sz);
   }
-  return depth;
 }

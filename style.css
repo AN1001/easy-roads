@@ -1,3 +1,29 @@
 body { margin: 0; overflow: hidden; background: #000; }
 /* pixelated: scale the small canvas up in sharp square blocks, not smoothed. main.js sizes it. */
-canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; }
+canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; image-rendering: pixelated; }
+
+/* The controls hint (ui.js): pale on a dark band at the bottom, fading away once driving. */
+body { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.hint {
+  position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+  max-width: calc(100vw - 32px); box-sizing: border-box;
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px;
+  padding: 6px 12px; background: rgba(8, 10, 12, 0.55); color: #c9cfc4;
+  font: 12px/1.4 ui-monospace, Menlo, monospace; pointer-events: none;
+  transition: opacity 1.5s;
+}
+.hint.hidden { opacity: 0; }
+.hint span { white-space: nowrap; }
+.hint kbd { font: inherit; color: #eef2e6; padding: 0 4px; border: 1px solid rgba(238, 242, 230, 0.35); }
+
+/* The joystick (ui.js): a faint ring resting at the bottom left, under the thumb while it's held. */
+.joystick {
+  position: fixed; left: calc(max(24px, env(safe-area-inset-left)) + 60px); top: calc(100% - max(24px, env(safe-area-inset-bottom)) - 60px);
+  width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%;
+  border: 2px solid rgba(238, 242, 230, 0.25); background: rgba(8, 10, 12, 0.2); pointer-events: none;
+}
+.joystick.held { border-color: rgba(238, 242, 230, 0.45); }
+.joystick .knob {
+  position: absolute; left: 50%; top: 50%; width: 48px; height: 48px; margin: -24px 0 0 -24px; border-radius: 50%;
+  background: rgba(238, 242, 230, 0.35);
+}

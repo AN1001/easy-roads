@@ -52,11 +52,11 @@ export function createProfiler(gl, passNames, counterNames = []) {
   }
 
   function updateOverlay(now) {
-    let worst = 0, jsSum = 0, jsN = 0, jsMax = 0;
+    let worst = 0, gapSum = 0, gapN = 0, jsSum = 0, jsN = 0, jsMax = 0;
     const gpuSum = new Float64Array(P), gpuN = new Float64Array(P);
     for (let k = 0; k <= frame && k < 50; k++) {
       const i = (frame - k) % FRAMES;
-      if (!Number.isNaN(intervals[i])) worst = Math.max(worst, intervals[i]);
+      if (!Number.isNaN(intervals[i])) { worst = Math.max(worst, intervals[i]); gapSum += intervals[i]; gapN++; }
       if (!Number.isNaN(jsTimes[i])) { jsSum += jsTimes[i]; jsN++; jsMax = Math.max(jsMax, jsTimes[i]); }
       for (let p = 0; p < P; p++) {
         const g = gpuTimes[i * P + p];
@@ -76,12 +76,14 @@ export function createProfiler(gl, passNames, counterNames = []) {
       if (gap > usual * 1.5) late++;
       t += gap;
     }
-    // Firefox has no GPU timer queries (without changing a setting).
+    // Firefox and Safari have no GPU timer queries (Firefox without changing a setting).
     const gpu = ext ? passNames.map((name, p) => `${name} ${(gpuSum[p] / gpuN[p]).toFixed(2)}`).join('  ')
       : 'not measurable in this browser';
     const counts = counterNames.map((name, c) => `${name} ${counters[(frame % FRAMES) * C + c]}`).join('  ');
+    // Frames a second over the last 50: the screen's rate (60, or 120 on a ProMotion screen), or
+    // less if the browser holds the page back (Safari halves it in Low Power Mode) or it can't keep up.
     overlay.textContent =
-      `${gl.canvas.width}x${gl.canvas.height} | worst frame ${worst.toFixed(1)} ms | late frames ${late} in 10 s | JS ${(jsSum / jsN).toFixed(2)} / ${jsMax.toFixed(1)} ms\n` +
+      `${gl.canvas.width}x${gl.canvas.height} | ${Math.round(1000 * gapN / gapSum)} fps | worst frame ${worst.toFixed(1)} ms | late frames ${late} in 10 s | JS ${(jsSum / jsN).toFixed(2)} / ${jsMax.toFixed(1)} ms\n` +
       `GPU ms: ${gpu}${counts ? `\n${counts}` : ''}`;
     nextOverlay = now + 1000;
   }
