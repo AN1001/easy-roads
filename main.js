@@ -117,25 +117,16 @@ const chunkIndexBuffer = gl.createBuffer();
 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, chunkIndexBuffer);
 gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, terrain.indices, gl.STATIC_DRAW);
 
-// One vertex buffer and VAO per chunk slot, made once and refilled as the slot takes on new
-// chunks: no GPU objects are created or deleted while driving. 8 bytes per vertex (see
-// terrain.js): 4-byte aligned, which Metal requires, so the browser can hand the buffer over as-is.
-const chunkBuffers = [];
-const chunkVaos = terrain.slots.map(slot => {
-  const vao = gl.createVertexArray();
-  gl.bindVertexArray(vao);
-  const buffer = gl.createBuffer();
-  chunkBuffers.push(buffer);
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-  gl.bufferData(gl.ARRAY_BUFFER, slot.vertices.byteLength, gl.DYNAMIC_DRAW);
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, chunkIndexBuffer);
-  const stride = VERTEX_SHORTS * 2;
-  gl.enableVertexAttribArray(0);
-  gl.vertexAttribIPointer(0, 2, gl.SHORT, stride, 0);        // height, road edge: stay integers
-  gl.enableVertexAttribArray(1);
-  gl.vertexAttribPointer(1, 4, gl.BYTE, true, stride, 4);    // normal and grove: -127..127 becomes -1..1
-  return vao;
-});
+// All the chunks drawn in one draw, a copy (instance) each: each chunk slot's vertices are a row of
+// one integer texture (terrain.vert reads them by gl_VertexID; refilled as the slot takes on new
+// chunks, through a pixel buffer, as the bamboo's are), and per copy, from a small buffer refilled
+// each frame (one for each turn), where the chunk is, how far apart its vertices, and its slot's row.
+// (Until 3 Oct 2026, a vertex buffer and VAO per slot, and per chunk drawn its own draw: ~41 draws and
+// ~120 calls a frame, each with its cost in the browser and the driver.) A vertex is a texel of 4
+// 16-bit numbers: height, road edge, and the normal and grove as bytes (terrain.js).
+const CHUNK_VERTICES = terrain.slots[0].vertices.length / VERTEX_SHORTS;  // with the skirts': 1,085
+const chunkCopies = new Float32Array(4 * terrain.slots.length);
+const chunkCopyBuffers = [], chunkVaos = [];
 const uploadedVersion = new Int32Array(terrain.slots.length);  // 0: nothing uploaded yet
 
 // The rivers' water (water.vert): per slot, its own buffer and VAO, 4 bytes a vertex (the water's
@@ -334,7 +325,7 @@ const natureKinds = (() => {
     });
     gl.bindVertexArray(null);
     return { kind, vao, instances, indices: p.count, firstIndex: p.firstIndex, copies: 0, list: new Float32Array(1024),
-      sorted: new Float32Array(1024), starts: new Int32Array(SECTORS + 2) };
+      sorted: new Float32Array(1024), starts: new Int32Array(SECTORS + 2), pointed: 0 };
   });
 })();
 // Ground cover that comes late, its chunk drawn in place of a coarser one that hadn't it only once
@@ -517,9 +508,9 @@ function dataTexture(unit, format, width, height) {
   gl.texStorage2D(gl.TEXTURE_2D, 1, format, width, height);
   // Filled with zeros once: Firefox otherwise clears a texture itself before the first upload to
   // part of it, slowly, warning each time (1 Oct 2026).
-  const float = format === gl.RGBA32F;
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, float ? gl.RGBA : gl.RG_INTEGER, float ? gl.FLOAT : gl.UNSIGNED_INT,
-    float ? new Float32Array(width * height * 4) : new Uint32Array(width * height * 2));
+  if (format === gl.RGBA32F) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.FLOAT, new Float32Array(width * height * 4));
+  else if (format === gl.RGBA16I) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA_INTEGER, gl.SHORT, new Int16Array(width * height * 4));
+  else gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RG_INTEGER, gl.UNSIGNED_INT, new Uint32Array(width * height * 2));
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);  // read with texelFetch, but
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);  // float textures can't filter
   gl.activeTexture(gl.TEXTURE0);
@@ -538,18 +529,34 @@ dataTexture(3, gl.RGBA32F, clumpWidth, terrain.slots.length);
 const TURNS = 3;
 let turn = 0;
 const listTextures = Array.from({ length: TURNS }, () => dataTexture(4, gl.RG32UI, LIST_WIDTH, LIST_ROWS));
+// The chunks' vertices (see chunkCopies) on unit 7; and per turn, the copies' buffer and a VAO
+// reading it (and the index list every chunk shares).
+dataTexture(7, gl.RGBA16I, CHUNK_VERTICES, terrain.slots.length);
+for (let k = 0; k < TURNS; k++) {
+  chunkVaos.push(gl.createVertexArray());
+  gl.bindVertexArray(chunkVaos[k]);
+  chunkCopyBuffers.push(gl.createBuffer());
+  gl.bindBuffer(gl.ARRAY_BUFFER, chunkCopyBuffers[k]);
+  gl.bufferData(gl.ARRAY_BUFFER, chunkCopies.byteLength, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 16, 0);
+  gl.vertexAttribDivisor(0, 1);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, chunkIndexBuffer);
+}
+gl.bindVertexArray(null);
 
-// `count` texels from `data` into the float texture on `unit`, `width` texels wide, from texel
-// `start` on (along its rows, on to the next where one ends). Copied into a new buffer, which the
-// GPU then copies into the texture in its own time, after the draws already sent that read it.
+// `count` texels from `data` into the texture on `unit` (4 numbers a texel: floats, or for the
+// chunks' vertices, `format` and `type` say 16-bit integers), `width` texels wide, from texel `start`
+// on (along its rows, on to the next where one ends). Copied into a new buffer, which the GPU then
+// copies into the texture in its own time, after the draws already sent that read it.
 const rowBuffer = gl.createBuffer();
-function uploadTexels(unit, width, start, data, count) {
+function uploadTexels(unit, width, start, data, count, format = gl.RGBA, type = gl.FLOAT) {
   gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, rowBuffer);
   gl.bufferData(gl.PIXEL_UNPACK_BUFFER, data, gl.STREAM_DRAW, 0, count * 4);  // new storage each time
   gl.activeTexture(gl.TEXTURE0 + unit);
   for (let done = 0; done < count;) {
     const at = start + done, x = at % width, n = Math.min(width - x, count - done);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, Math.floor(at / width), n, 1, gl.RGBA, gl.FLOAT, done * 16);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, Math.floor(at / width), n, 1, format, type, done * 4 * data.BYTES_PER_ELEMENT);
     done += n;
   }
   gl.activeTexture(gl.TEXTURE0);
@@ -608,6 +615,7 @@ gl.useProgram(treeProgram);
 gl.uniform1i(gl.getUniformLocation(treeProgram, 'uTree'), 6);
 const natureUniforms = { fade: gl.getUniformLocation(natureProgram, 'uFade'), sway: gl.getUniformLocation(natureProgram, 'uSway'),
   bloom: gl.getUniformLocation(natureProgram, 'uBloom') };
+let natureFade = [0, 0], natureSway = 0, natureBloom = null;  // what those are set to now
 gl.activeTexture(gl.TEXTURE0);
 for (const program of [terrainProgram, stalkProgram, leavesProgram, skyProgram, builtProgram, natureProgram]) {
   gl.useProgram(program);
@@ -615,6 +623,7 @@ for (const program of [terrainProgram, stalkProgram, leavesProgram, skyProgram, 
 }
 gl.useProgram(terrainProgram);
 gl.uniform1i(gl.getUniformLocation(terrainProgram, 'uPuddles'), 5);
+gl.uniform1i(gl.getUniformLocation(terrainProgram, 'uTerrain'), 7);
 gl.useProgram(clumpProgram);
 gl.uniform1i(gl.getUniformLocation(clumpProgram, 'uGround'), 1);
 const [stalkUniforms, leavesUniforms, clumpUniforms] = [stalkProgram, leavesProgram, clumpProgram].map(program => {
@@ -625,9 +634,8 @@ const [stalkUniforms, leavesUniforms, clumpUniforms] = [stalkProgram, leavesProg
   return { first: gl.getUniformLocation(program, 'uFirst'), stride: gl.getUniformLocation(program, 'uStride') };
 });
 
-const uChunk = gl.getUniformLocation(terrainProgram, 'uChunk');
 const uWaterChunk = gl.getUniformLocation(waterProgram, 'uChunk');
-const uModel = gl.getUniformLocation(carProgram, 'uModel');
+const uModels = gl.getUniformLocation(carProgram, 'uModels'), uFirstModel = gl.getUniformLocation(carProgram, 'uFirst');
 const uPointScale = gl.getUniformLocation(particleProgram, 'uPointScale');
 
 // --- Per-frame values shared by every shader: one Uniform Buffer Object (UBO), uploaded
@@ -665,7 +673,9 @@ const proj = mat4();
 const view = mat4();
 const planes = new Float32Array(24);  // the camera's 6 view-volume planes, for culling
 const spinMatrix = mat4(), steerMatrix = mat4(), wheelOffset = translation(mat4(), 0, 0, 0);
-const wheelLocal = mat4(), wheelModel = mat4();
+const wheelLocal = mat4();
+// The car's: the body's, then the four wheels' (car.vert's uModels).
+const carModels = new Float32Array(5 * 16), wheelModels = [1, 2, 3, 4].map(k => carModels.subarray(16 * k, 16 * (k + 1)));
 
 gl.enable(gl.DEPTH_TEST);  // nearer things hide further ones
 // Or as near: the sky is drawn at the far plane, depth 1, the same as the cleared depth, and shows
@@ -937,9 +947,7 @@ function frame(realMs) {
   for (let i = 0; i < terrain.slots.length; i++) {
     const slot = terrain.slots[i];
     if (slot.version === uploadedVersion[i] || !slot.ready) continue;
-    // New storage, rather than refilling what the slot's last chunk may still be drawn from.
-    gl.bindBuffer(gl.ARRAY_BUFFER, chunkBuffers[i]);
-    gl.bufferData(gl.ARRAY_BUFFER, slot.vertices, gl.DYNAMIC_DRAW);
+    uploadTexels(7, CHUNK_VERTICES, i * CHUNK_VERTICES, slot.vertices, CHUNK_VERTICES, gl.RGBA_INTEGER, gl.SHORT);
     if (slot.wet) {
       gl.bindBuffer(gl.ARRAY_BUFFER, waterBuffers[i]);
       gl.bufferData(gl.ARRAY_BUFFER, slot.water, gl.DYNAMIC_DRAW);
@@ -1067,16 +1075,12 @@ function frame(realMs) {
 
   // Car first: it's nearest, so the terrain pixels it covers fail the depth test
   // and are never shaded.
+  // The body's matrix and the wheels' (each spun about its axle and moved to where its spring
+  // holds it; the front two also steer) go up together; then the body's drawn, and the wheel four
+  // times, as copies, each with its own (car.vert). (A matrix and a draw each until 3 Oct 2026.)
   gl.useProgram(carProgram);
   profiler?.begin(1);
-  gl.bindTexture(gl.TEXTURE_2D, bodyTexture);
-  gl.bindVertexArray(bodyVao);
-  gl.uniformMatrix4fv(uModel, false, car.model);
-  gl.drawElements(gl.TRIANGLES, bodyIndexCount, gl.UNSIGNED_SHORT, 0);
-  // Wheels: each spun about its axle and moved to where its spring holds it; the front two
-  // also steer.
-  gl.bindTexture(gl.TEXTURE_2D, wheelTexture);
-  gl.bindVertexArray(wheelVao);
+  carModels.set(car.model);
   rotationY(steerMatrix, car.steerAngle);
   for (let i = 0; i < 4; i++) {
     const wheel = car.wheels[i];
@@ -1084,10 +1088,17 @@ function frame(realMs) {
     if (wheel.front) multiply(spinMatrix, steerMatrix, spinMatrix);
     wheelOffset[12] = wheel.x; wheelOffset[13] = wheel.y; wheelOffset[14] = wheel.z;
     multiply(wheelLocal, wheelOffset, spinMatrix);
-    multiply(wheelModel, car.model, wheelLocal);
-    gl.uniformMatrix4fv(uModel, false, wheelModel);
-    gl.drawElements(gl.TRIANGLES, wheelIndexCount, gl.UNSIGNED_SHORT, 0);
+    multiply(wheelModels[i], car.model, wheelLocal);
   }
+  gl.uniformMatrix4fv(uModels, false, carModels);
+  gl.bindTexture(gl.TEXTURE_2D, bodyTexture);
+  gl.bindVertexArray(bodyVao);
+  gl.uniform1i(uFirstModel, 0);
+  gl.drawElements(gl.TRIANGLES, bodyIndexCount, gl.UNSIGNED_SHORT, 0);
+  gl.bindTexture(gl.TEXTURE_2D, wheelTexture);
+  gl.bindVertexArray(wheelVao);
+  gl.uniform1i(uFirstModel, 1);
+  gl.drawElementsInstanced(gl.TRIANGLES, wheelIndexCount, gl.UNSIGNED_SHORT, 0, 4);
   profiler?.end();
 
   // The bridges: few, and in front of the land under them.
@@ -1137,19 +1148,31 @@ function frame(realMs) {
   profiler?.begin(10);
   gl.useProgram(natureProgram);
   natureView();
+  // Per kind, only the calls that change something: the uniforms (the program's, for every kind)
+  // when they differ from the last kind's; the copies' attributes (its VAO's) when its run of them
+  // starts elsewhere than last time. (Every call for every kind, every frame, until 3 Oct 2026: ~130
+  // calls a frame, now ~45.)
   for (const nk of natureKinds) {
     if (!nk.copies || !natureOn) continue;
-    gl.uniform2f(natureUniforms.fade, nk.kind.fade[0], nk.kind.fade[1]);
-    gl.uniform1f(natureUniforms.sway, nk.kind.sway);
-    if (nk.kind.bloom) gl.uniform3fv(natureUniforms.bloom, nk.kind.bloom);
-    gl.bindVertexArray(nk.vao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, nk.instances);
+    let bound = false;
     for (let r = 0; r < natureRunCount; r++) {
       const from = nk.starts[natureRuns[2 * r]], count = nk.starts[natureRuns[2 * r + 1]] - from;
       if (!count) continue;
-      // (WebGL2 can't start an instanced draw part way through: the copies' attributes moved instead.)
-      gl.vertexAttribPointer(4, 4, gl.FLOAT, false, INSTANCE_FLOATS * 4, from * INSTANCE_FLOATS * 4);
-      gl.vertexAttribPointer(5, 1, gl.FLOAT, false, INSTANCE_FLOATS * 4, (from * INSTANCE_FLOATS + 4) * 4);
+      if (!bound) {
+        const kind = nk.kind;
+        if (kind.fade[0] !== natureFade[0] || kind.fade[1] !== natureFade[1]) { natureFade = kind.fade; gl.uniform2f(natureUniforms.fade, natureFade[0], natureFade[1]); }
+        if (kind.sway !== natureSway) { natureSway = kind.sway; gl.uniform1f(natureUniforms.sway, natureSway); }
+        if (kind.bloom && kind.bloom !== natureBloom) { natureBloom = kind.bloom; gl.uniform3fv(natureUniforms.bloom, natureBloom); }
+        gl.bindVertexArray(nk.vao);
+        bound = true;
+      }
+      if (from !== nk.pointed) {
+        // (WebGL2 can't start an instanced draw part way through: the copies' attributes moved instead.)
+        gl.bindBuffer(gl.ARRAY_BUFFER, nk.instances);
+        gl.vertexAttribPointer(4, 4, gl.FLOAT, false, INSTANCE_FLOATS * 4, from * INSTANCE_FLOATS * 4);
+        gl.vertexAttribPointer(5, 1, gl.FLOAT, false, INSTANCE_FLOATS * 4, (from * INSTANCE_FLOATS + 4) * 4);
+        nk.pointed = from;
+      }
       gl.drawElementsInstanced(gl.TRIANGLES, nk.indices, gl.UNSIGNED_SHORT, 2 * nk.firstIndex, count);
     }
   }
@@ -1181,17 +1204,21 @@ function frame(realMs) {
   gl.enable(gl.CULL_FACE);
 
   // Terrain, nearest chunks first, for the same reason as the car: terrain.update listed them
-  // in that order. Per visible chunk, 3 calls (bind its VAO, say where it is, draw).
+  // in that order (and copies are drawn in order). One draw, a copy for each chunk in view.
   gl.useProgram(terrainProgram);
   profiler?.begin(3);
   let drawn = 0;
   for (let k = 0; k < terrain.drawCount; k++) {
     const i = terrain.drawList[k], chunk = terrain.slots[i];
     if (cull && !chunkVisible(chunk)) continue;
-    gl.bindVertexArray(chunkVaos[i]);
-    gl.uniform3f(uChunk, chunk.x, chunk.z, chunk.spacing);
-    gl.drawElements(gl.TRIANGLES, terrain.indices.length, gl.UNSIGNED_SHORT, 0);
+    chunkCopies[4 * drawn] = chunk.x; chunkCopies[4 * drawn + 1] = chunk.z; chunkCopies[4 * drawn + 2] = chunk.spacing; chunkCopies[4 * drawn + 3] = i;
     drawn++;
+  }
+  if (drawn) {
+    gl.bindVertexArray(chunkVaos[turn]);
+    gl.bindBuffer(gl.ARRAY_BUFFER, chunkCopyBuffers[turn]);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, chunkCopies, 0, 4 * drawn);
+    gl.drawElementsInstanced(gl.TRIANGLES, terrain.indices.length, gl.UNSIGNED_SHORT, 0, drawn);
   }
   profiler?.end();
   profiler?.count(0, drawn);

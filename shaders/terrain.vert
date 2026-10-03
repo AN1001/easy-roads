@@ -1,22 +1,21 @@
 #version 300 es
-// Places each terrain vertex. The vertex buffer holds only its height, how far it is from the
-// road's edge, the ground's normal and how thick the bamboo grows there: x and z are worked out from
-// the vertex's index within its chunk, the chunk's position and how far apart its vertices are (its
+// Places each terrain vertex. Each chunk is a copy (instance) of one draw for all of them (main.js),
+// and its vertices a row of uTerrain, holding only each one's height, how far it is from the road's
+// edge, the ground's normal and how thick the bamboo grows there: x and z are worked out from the
+// vertex's index within its chunk, the chunk's position and how far apart its vertices are (its
 // level of detail, terrain.js). Also the daylight on it and the mist over it, which change slowly
 // enough across a triangle to blend (the headlight's cone doesn't: terrain.frag lights that).
 
 #include "frame.glsl"
 #include "sky.glsl"
 
-// Two 16-bit integers (see terrain.js): height in cm, and cm from the road's edge (frayed,
-// negative on the road).
-layout(location = 0) in ivec2 aVertex;
-// xyz: the ground's unit normal, from the heights around it; w: how thick the bamboo grows, 0 to 1,
-// or, negative, how much riverbed (-1 under a river's water).
-// (One attribute of 4 bytes: Metal reads attributes straight from the buffer only if each starts on
-// a multiple of 4 bytes, and the browser would otherwise convert the buffer first.)
-layout(location = 1) in vec4 aNormal;
-uniform vec3 uChunk;  // world x/z of the chunk's first vertex, and m between its vertices
+// Per vertex, a texel of four 16-bit integers (see terrain.js): height in cm; cm from the road's edge
+// (frayed, negative on the road); then as bytes, low then high, the ground's unit normal's x and y,
+// and its z and how thick the bamboo grows (0 to 127), or, negative, how much riverbed (-127 under a
+// river's water). A row a chunk slot (main.js).
+uniform highp isampler2D uTerrain;  // texture unit 7
+// Per chunk: world x/z of its first vertex, m between its vertices, and its slot's row of uTerrain.
+layout(location = 0) in vec4 aChunk;
 
 out vec3 vWorldPos;
 out vec3 vNormal;
@@ -41,13 +40,16 @@ void main() {
     col = side < 2 ? t : side == 2 ? 0 : SIZE - 1;
     row = side >= 2 ? t : side == 0 ? 0 : SIZE - 1;
   }
-  float x = uChunk.x + float(col) * uChunk.z;
-  float z = uChunk.y + float(row) * uChunk.z;
-  vWorldPos = vec3(x, float(aVertex.x) * 0.01, z);
-  vNormal = aNormal.xyz;
-  vEdge = float(aVertex.y) * 0.01;
-  vGrove = aNormal.w;  // negative on a river's bed (terrain.js)
-  vDaylight = daylight(normalize(aNormal.xyz)) * (1.0 - GROVE_SHADE * max(vGrove, 0.0));
+  ivec4 v = texelFetch(uTerrain, ivec2(gl_VertexID, int(aChunk.w)), 0);
+  // The bytes, -127 to 127 as -1 to 1, as a normalized attribute's were (until 3 Oct 2026).
+  vec4 normal = max(vec4((v.z << 24) >> 24, v.z >> 8, (v.w << 24) >> 24, v.w >> 8) / 127.0, -1.0);
+  float x = aChunk.x + float(col) * aChunk.z;
+  float z = aChunk.y + float(row) * aChunk.z;
+  vWorldPos = vec3(x, float(v.x) * 0.01, z);
+  vNormal = normal.xyz;
+  vEdge = float(v.y) * 0.01;
+  vGrove = normal.w;  // negative on a river's bed (terrain.js)
+  vDaylight = daylight(normalize(normal.xyz)) * (1.0 - GROVE_SHADE * max(vGrove, 0.0));
   vMist = vec4(mistColor(vWorldPos), mist(vWorldPos));
   gl_Position = uViewProj * vec4(vWorldPos, 1.0);
 }
