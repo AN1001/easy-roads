@@ -5,7 +5,7 @@
 set -e
 rm -rf dist
 mkdir -p "dist/assets/Car 03" dist/assets/Wheel dist/assets/tree_01
-cp index.html style.css manifest.webmanifest *.js dist/
+cp index.html style.css manifest.webmanifest *.js dist/  # (the modules, and the workers: terrain-worker.js, tree-worker.js)
 cp -R shaders dist/
 rm dist/shaders/cube.*  # bench/frames.html's only
 cp "assets/Car 03/Car3.obj" "assets/Car 03/car3_zen.png" "dist/assets/Car 03/"

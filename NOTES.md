@@ -142,13 +142,14 @@ Misty, pixelated, low-poly. What makes it, and where it lives:
 | **Levels of detail: a vertex every 1 m within 100 m, 2 m within 220 m, 4 m to 400 m** | `terrain.js` (`createTerrain`, `select`), `main.js` (`DETAIL`), `terrain.vert` (`uChunk`) | Every chunk is 31 × 31 vertices, so coarser ones cover 60 or 120 m. A chunk gives way to its 4 finer children only once they can all be drawn: no holes while they're built. Skirts hide the cracks between levels. ~240 chunks built instead of ~740; ~52 drawn instead of ~170; terrain GPU 1.68 → 0.95 ms |
 | **Chunks kept in rings** of 14², 13² and 9² slots, one per level | `terrain.js` | Chunk (cx, cz) of a level always lives in slot (cx mod n, cz mod n): the chunks left behind free exactly the slots the new ones need. No map lookups, no allocation, and each slot keeps its GPU buffer and VAO for good (`bufferData` refills it, with new storage: see "Nothing the GPU may still be reading is written to") |
 | **Chunks built before they're needed, soonest first** | `terrain.js` (`mostDue`), `main.js` (`AHEAD`) | By distance, not by whole rows of chunks: they come into range a few at a time, each 40 m (1.1 s at top speed) before it's needed: before the fog shows it, or before its level takes over |
-| **Chunks built a row at a time, 1 ms per frame at most** | `terrain.js` (`update`), `main.js` (`BUILD_BUDGET`, `SEEN`) | The budget is per frame, not per chunk: a chunk (~0.5 ms, ~15 µs a row) is spread over 1-2 frames. Driving flat out needs ~0.21 ms per frame (~19 chunks a second). Any hole on screen within 333 m (`SEEN`; off screen, it waits its turn: 1 Oct 2026) is filled at once, past the budget: a slow frame rather than land appearing. Falling behind (the chunk needed soonest due within 20 m), up to 3 times the budget until caught up (3 Oct 2026). And at most 100 rows per ms of budget (`ROWS_PER_MS`): Chrome's clock stops it first (~66 rows), but Firefox rounds `performance.now()` to 1 ms, or much coarser with its fingerprinting protection on, and could build until it ticks. No worker needed (yet): see measurements |
+| **Chunks built in a worker; on the main thread only what's needed at once** | `terrain-worker.js`, `terrain.js` (`update`, `buildChunk`, `packChunk`), `main.js` | A module worker builds whole chunks (~0.5 ms each), the soonest due first, four asked at a time; each comes back packed into one transferred buffer, which goes back with a later ask (3 Oct 2026). The main thread still builds a hole on screen within 333 m (`SEEN`) and the ground under the car at once, and everything where no worker starts (a row at a time, within `BUILD_BUDGET` ms a frame, up to `CATCH_UP` times it when behind, at most `ROWS_PER_MS` rows per ms: Firefox's clock is rounded to 1 ms). Main thread 0.33 → 0.11 ms a frame for the terrain in Node, driving the road |
 | **Rows skip roads that can't matter** | `terrain.js` (`nearbyRoads`, `farFromRoads`) | Per 11 vertices of a row, only the pieces whose edge comes within LAND_ROUNDING of the nearest (the smooth minimums reach no further); where every road is 76.5 m+ away, no road maths at all. The same bytes exactly |
 | Each chunk finds its nearby road pieces once | `terrain.js` (`findRoads`) | Room for 176 pieces within 79.5 m of the chunk (the most measured: 83), so each vertex checks a handful instead of the whole network |
 | **Roads worked out once, kept for the next chunks** | `terrain.js` (`cacheRoad`) | A road's bends and its height along it (sampling the land every 40 m) are most of the work of finding roads, and neighbouring chunks want the same few: 64 slots, one per hash of the road. 0.513 → 0.420 ms per chunk; the same bytes |
 | `heightAt` remembers the last chunk it used | `terrain.js` | The wheels and hull points nearly always share a chunk. Skips two divides and two `%` per call: physics 11 → 7 µs per frame |
-| All chunks share one index buffer | `terrain.js`, `main.js` | Same 30×30 grid layout (plus the skirts), so 12.2 KB of indices serves the whole terrain |
-| **Terrain vertex = 8 bytes: height, road edge, normal, grove** | `terrain.js`, `terrain.vert` | Height in cm (16-bit, ±327 m); cm from the road's edge, frayed (16-bit); the normal as 3 bytes; how thick the bamboo grows (a byte, 0-127: it held the distance along a dash until the roads became dirt). 961 vertices per chunk, then 124 for its skirts. x/z come from `gl_VertexID`, the chunk's origin and spacing. `vertexAttribIPointer` keeps the first two 16-bit numbers integers; the last 4 bytes are one attribute, arriving as −1…1 floats (Metal reads an attribute straight from the buffer only if it starts on a multiple of 4 bytes; splitting the grove off as its own at byte 7 measured no slower, but one is simpler) |
+| All chunks share one index buffer, the squares in serpentine strips six wide | `terrain.js`, `main.js` | Same 30×30 grid layout (plus the skirts), so 12.2 KB of indices serves the whole terrain. In strips (3 Oct 2026), a vertex is still in the GPU's post-transform cache when the next row comes to it: ~1,080 vertex shader runs a chunk through a cache of 16-48 vertices, not 1,860 (row by row: 961 from 64 up). `STRIP` in `terrain.js`: 30 is row by row again |
+| **Terrain vertex = 8 bytes: height, road edge, normal, grove** | `terrain.js`, `terrain.vert` | Height in cm (16-bit, ±327 m); cm from the road's edge, frayed (16-bit); the normal as 3 bytes; how thick the bamboo grows (a byte, 0-127: it held the distance along a dash until the roads became dirt). 961 vertices per chunk, then 124 for its skirts. x/z come from `gl_VertexID`, the chunk's origin and spacing. Since 3 Oct 2026 a texel of an RGBA16I texture (a row per slot), read by `gl_VertexID`, the bytes unpacked in `terrain.vert` (they were attributes: `vertexAttribIPointer` for the two 16-bit integers, 4 normalized bytes) |
+| **The land in one draw: a copy (instance) per chunk** | `main.js` (`chunkCopies`), `terrain.vert` | Per chunk drawn, where it is, its spacing and its slot's row, in a small buffer (one per turn); one `drawElementsInstanced`, nearest first. ~41 draws and ~123 calls a frame → 1 draw and 5 calls (3 Oct 2026) |
 | 4-byte vertex stride | `main.js` | Metal requires vertex strides to be multiples of 4 bytes; anything else makes the browser convert the buffer first |
 | `Uint16` indices | `terrain.js` | Half the size of 32-bit indices. A chunk has 961 vertices, far below the 65535 "primitive restart" index |
 | Fog distances live in the UBO | `main.js`, shaders | JS culling and the shader's fog use the same numbers, set in one place |
@@ -162,7 +163,7 @@ Misty, pixelated, low-poly. What makes it, and where it lives:
 | Mipmap level worked out from the world position | `terrain.frag` | Once, from `dFdx`/`dFdy` of the position, for every read (`textureLod`). The GPU's own estimate would blur every pixel where the texture coordinates jump (materials, the bank's two directions), and isn't defined inside the `if`s |
 | The bank's two directions blended by dither | `terrain.frag` | Where a slope turns between facing x and facing z, each pixel takes one direction or the other by the Bayer pattern: one texture read instead of the two a smooth blend needs, and no seam |
 | **Bamboo: not instanced; each stalk pulled from a texture** | `bamboo.js`, `bamboo.glsl`, `main.js` | Instanced, each stalk cost ~0.16 µs whatever its model's size (see "Bamboo, rain and sky"). Instead each level-0 chunk slot has a row of a float texture (2 texels a stalk), refilled with the chunk, and the vertex shaders work out the stalk and the vertex of its model from `gl_VertexID`: stalks + leaves 4.04 → 1.77 ms at 860 × 360, with the other steps below |
-| **Bamboo: a list made each frame, stalk by stalk** | `bamboo.js` (`update`), `bamboo.glsl` (`loadEntry`), `main.js` | JS picks the stalks to draw: within 210 m, from chunks the land is drawn from, a 6 m square at a time (skipped whole out of view or all clump; taken whole, in a tight loop, in view and all stalks; else stalk by stalk against the view's sides), near or far by each one's own distance. The list (which stalk; how far the car has bent it; how much of it is there) is an integer texture, uploaded each frame (~10,300 entries, 97 KB with the near ones' room; one of three textures, taking turns), which the vertex shaders read by `gl_VertexID`; the near ones have its first 2,048 entries to themselves, so the far ones go straight into place. Per-chunk choices drew every stalk of a chunk within 30 m as near (up to ~70 m away) and every one of a chunk partly in view: near stalks 1,500 → ~200. ~0.22 ms of JS (Node) for ~8,700 stalks and ~1,700 clumps |
+| **Bamboo: a list made each frame, stalk by stalk** | `bamboo.js` (`update`), `bamboo.glsl` (`loadEntry`), `main.js` | JS picks the stalks to draw: within 210 m, from chunks the land is drawn from, a 6 m square at a time (skipped whole out of view or all clump; taken whole, in a tight loop, in view and all stalks; else stalk by stalk against the view's sides), near or far by each one's own distance. The list (which stalk; whether bent; how much of it is there) is an integer texture, a 32-bit number an entry, uploaded each frame (~10,300 entries, ~45 KB with the near ones' room; one of three textures, taking turns; 8 bytes an entry, ~97 KB, until 3 Oct 2026); how far a bent one is bent is in a second texture at the same entry, uploaded only where any are, which the vertex shaders read by `gl_VertexID`; the near ones have its first 2,048 entries to themselves, so the far ones go straight into place. Per-chunk choices drew every stalk of a chunk within 30 m as near (up to ~70 m away) and every one of a chunk partly in view: near stalks 1,500 → ~200. ~0.22 ms of JS (Node) for ~8,700 stalks and ~1,700 clumps; 0.16 ms since 3 Oct 2026 (each box tested only against the planes its chunk's box crosses, in one linear test) |
 | **Bamboo: three levels of detail** | `bamboo.js`, `stalk.vert`, `leaves.vert`, `clump.*` | Past that, the cost is vertices: ~7-9 ns each, whatever the shader (leaving the headlight and the wet sheen out of the far ones' lighting measured no faster). Within 26–34 m (each stalk its own distance, the two dissolving into each other over 4 m): 5-sided tubes in 2 segments (18 vertices), 3 leaf cards of 2 quads (18). Beyond, where a stalk is under ~1.8 pixels: a line (2 vertices; always a pixel wide, where a thin tube flickers) and one card facing the camera (4), a picture of the 3 crossed cards. From 180–200 m (each 6 m square at its own distance, all its stalks dissolving into its clump over 20 m, so they swap a few at a time, never show both or neither, and do it in 75-80% mist) to 400 m: clumps, one card facing the camera (4 vertices) for each 6 m square where bamboo grows, standing for its ~10 stalks |
 | **Bamboo: a handful of draws a frame** | `main.js` (`drawBamboo`, `drawList`) | With indices, as many stalks as 16-bit vertex numbers reach (3,640 or 4,096) per draw: ~7 draws for stalks, leaves and clumps |
 | **Clumps planted by every chunk, at every level** | `terrain.js` (`plantClumps`), `main.js` | On the same 6 m squares of the world with the same random numbers, from each chunk's own vertices: a finer chunk has the same clumps as the coarser one it replaces (99.4% of them at level 1, 96% at level 2; the rest deep in the mist). Drawn from the chunks the land is drawn from, so never twice and never missing; stalks too, so a chunk built while its parent is still drawn adds nothing until it's drawn; a level-1 chunk drawn where its level-2 parent was (only clumps) dissolves from clumps into stalks over 0.6 s. None within 3 m of a lane's edge: the card, turned to the camera, would stand out over it. A texel each in a float texture, a row per slot. ~1% more building time |
@@ -180,7 +181,7 @@ Misty, pixelated, low-poly. What makes it, and where it lives:
 | No allocations in the game loop (explicit ones) | `math.js`, `main.js` | Matrices created once; `lookAt` takes plain numbers, not arrays. V8 still boxes fractional numbers passed to or returned from functions it doesn't inline: ~1.5 MB/s while driving, a ~0.1 ms minor GC a few times a second (see "Cleanup and review") |
 | Car vertex = 5 floats (x, y, z, u, v), 20 bytes | `obj.js`, `main.js` | Only 411 + 34 vertices (10.2 KB for the body; 382 until the livery's two copies, which store the middle line's corners once for each), so packing smaller isn't worth the code. Corners that share a position and texture coordinate are stored once |
 | Car attribute locations fixed in the shader (`layout(location = …)`) | `car.vert`, `main.js` | Body and wheel VAOs use them directly: no `getAttribLocation` |
-| **One wheel mesh, drawn 4 times** | `car.js`, `main.js` | The model's built-in wheels are cut out at load (64 faces: every face whose corners all sit inside a tyre). Per frame, per wheel: its own spin, and its height on its spring written into one reused offset matrix. 10 matrix multiplies, no allocations |
+| **One wheel mesh, drawn 4 times** | `car.js`, `main.js` | The model's built-in wheels are cut out at load (64 faces: every face whose corners all sit inside a tyre). Per frame, per wheel: its own spin, and its height on its spring written into one reused offset matrix. 10 matrix multiplies, no allocations. The body's and the wheels' matrices go up as one uniform array, the wheel drawn as 4 copies (`car.vert`): 2 draws, not 5 (3 Oct 2026) |
 | Textures: `NEAREST`, no mipmaps, clamped; decoded with no colour conversion or premultiplying | `gl.js` | The PS1 look, exact texel values (so the tail-light test can rely on them), no mipmap memory |
 | Vertex Array Objects (one per mesh) | `main.js` | Switching mesh is one `bindVertexArray` instead of re-describing buffers |
 | Car drawn before terrain (front to back) | `main.js` | Terrain pixels hidden behind the car fail the depth test and are never shaded |
@@ -190,15 +191,139 @@ Misty, pixelated, low-poly. What makes it, and where it lives:
 | Ground height uses the mesh's own triangles | `terrain.js` | Car sits exactly on the rendered surface, not a smoothed approximation: both read the same whole-cm heights. The same lookup gives the triangle's normal, for contacts |
 | **Uniform Buffer Object** for per-frame values (view-projection + camera) | `main.js`, shaders | One upload shared by every shader, instead of the same uniforms per program. `multiply` writes straight into the UBO's array, so no copy. Three, taking turns |
 | **Nothing the GPU may still be reading is written to** | `main.js` (`TURNS`, `uploadRow`) | The GPU runs a frame or two behind. Refilling a buffer or texture it may still be drawing from makes some drivers stop and wait for it: macOS's OpenGL among them, which Firefox and Zen draw with (Chrome's Metal copes). So what's refilled every frame (the bamboo's list, the frame's uniforms, the particles) has three copies, taking turns; a finished chunk's rows of the bamboo's textures go through a pixel buffer of their own, which the GPU copies into the texture after the draws already sent; and its vertices get new storage (`bufferData`), not the slot's old one refilled. Free in Chrome (measured); not measured in Zen |
-| Per frame: 1 UBO upload (and binding this turn's), car (15 calls: body + 4 wheels), 3 calls per visible chunk (~50), bamboo (4 for the list, ~15 for stalks, leaves and clumps), 5-15 calls per chunk finished building (a few a second), particles (5 calls, if any), rain and sky (3 each) | `main.js` | Each `gl.*` call has a fixed crossing cost (see below). JS mean 0.8 ms while driving (0.7 before the bamboo's list). The tail lights' brightness moved from a car uniform into the UBO |
+| Per frame (3 Oct 2026, driving the road): ~134 calls, ~35 draws: 1 UBO upload (and binding this turn's), car (10 calls, 2 draws), the land (5 calls, 1 draw), bamboo (2-4 for the list, ~15 for stalks, leaves and clumps), ground cover (~50 calls, ~18 draws), trees (~10), particles, rain and sky, and a few as chunks arrive | `main.js` | Each `gl.*` call has a fixed crossing cost (see below). Was ~370 calls and ~88 draws (`bench/count.js`). JS mean 0.8 ms while driving (0.7 before the bamboo's list); in Node 0.55 → 0.28 ms with the workers |
 | `alpha` left at default | `main.js` | Turning it off was measured slower here |
 | Shader status checked once, after linking | `gl.js` | Each status check waits for the GPU process. Startup blocking roughly halved (see measurements) |
 | Terrain grid size is a shader constant, not a uniform | `terrain.vert` | Lets the compiler turn `gl_VertexID / 31` into a multiply and shift. Too small to measure at ~20k vertices |
 | No array literals in the maths, even outside the loop | `math.js` | `perspective` (runs on resize) writes elements directly, so the whole file really is allocation-free |
+| **Trees, bridges and broadleaf drawn with indices** | `trees.js` (`vertex`, `triangle`), `blocks.js` (`blockWriter`, `shareVertices`), `main.js` (`fillBuilt`) | Each vertex stored once, the triangles as indices: a cherry's near model ~2.2 times fewer vertices shaded, the far one ~1.75, broadleaf ~3.4. The same triangles in the same order (3 Oct 2026) |
+| **Cherry and maple models made in a worker** | `tree-worker.js`, `main.js` (`askTree`) | One asked for at a time (~1 ms each in Node, made on the main thread a frame at a time before); after a jump, all within SEEN still made here at once. A new tree is held back if it's in view within SEEN the first time it could be drawn (3 Oct 2026) |
+| **Value noise from shared products** | `shaders/noise.glsl` (`built.frag`, `nature.frag`) | The eight corners' hashes from three products, `(c + 1) × k = c × k + k`: 11 integer multiplies a noise, not 32 (slow on Intel), blended in the same order: the same numbers (3 Oct 2026) |
+| **Ground cover: copies by distance, sectors from where the camera looks, only changed calls** | `main.js` (`gatherNature`, `natureView`) | Copies within their kind's fade + 15 m, not whole chunks (~500 → ~300 a frame); sectors counted from the camera's look, the nearest bucket in the middle, so a kind's copies in view are one draw (29 → 18); uniforms and the copies' pointers set only when they change (~164 → ~53 calls). Nothing allocated (3 Oct 2026) |
+| **Walls near the car only** | `main.js` (`wallAt`, `WALL_REACH`), `trees.js` (`treesNear`), `nature.js` (`copiesNear`) | Trees and boulders within 10 m of the car, found once a frame, instead of every tree for every wall point at every physics step: 0.06 → 0.004 ms a frame in Node (3 Oct 2026) |
+| **Trees found a few squares a frame** | `terrain.js` (`findTrees`, `GROUPS_A_CALL`) | Three new 35 m squares a frame rather than ~37 at once every 50 m (~2.5 ms in Node); all at once after a jump (3 Oct 2026) |
 
 The cube (`shaders/cube.*`) is no longer in the game, but `bench/frames.html` still profiles it.
 
 ## Measurements
+
+### Half the main thread's JS, a third of the draws: workers, indices, one draw for the land (3 Oct 2026)
+
+Asked for: optimise everything as far as it will go, CPU and GPU, for Zen on the Iris Plus 655 at
+~576 × 360, with nothing visibly changing (no pop-in, LOD swaps or culling that shows; fading only in
+thick mist; whatever comes late held back until out of sight), the loop allocation-free, nothing
+downloaded; from the leads above (ground cover, trees, bamboo's list, the walls, building in a worker).
+Done in a cloud session: no Mac, no GPU.
+
+**How it was measured, without the Mac.** Headless Chromium drawing through SwiftShader (software:
+bound by pixels, so its GPU timings only compare A with B); the work counted instead (`bench/count.js`:
+calls, draws, vertices, copies, bytes uploaded); the JS timed in Node, main.js itself against a WebGL
+context that does nothing (`bench/loop.mjs`, V8 as in Chrome: Firefox runs the same JS slower); and
+nothing visibly changed proved by screenshots: `?step=60` (every frame 1/60 s of the game) with
+`HOLD` (bench/headless.mjs: the game stopped at a given frame, `Math.random` seeded) makes the same
+picture every run, so each change was diffed (`bench/diff.mjs`) against the version before all this, at
+576 × 360, in nine views: driving the road at the start (frames 240 and 900), rocks and cherries far
+off (spawn -2298,-2998), a cherry close (-2486,-995), a bush (-2284,-71), cherries, maples, fallen
+petals, bushes and rocks (-1319,-3126 facing back), a bridge (-2284,-71 facing back), and circling
+through a grove, bending stalks (frames 250 and 400). After every change: **0 of 207,360 pixels
+differ**, in all of them. (The noise and the bamboo's list were also checked number for number: the
+same values, 5 M list entries with near and far stalks bent.)
+
+**What changed** (all in place of the same work, giving the same result):
+
+- **The land built in a worker** (`terrain-worker.js`, a module worker): whole chunks, asked for four
+  at a time, the soonest due first, each back packed into one transferred buffer that goes back with
+  the next ask. The main thread still builds a hole on screen within SEEN and the ground under the car
+  at once, and everything if no worker starts (the old way, unchanged: `bench/keepup.js` 22.7 chunks
+  a second, all 153 drawable, none behind). The building code moved out of `createTerrain` unchanged:
+  the same bytes (`bench/build.mjs` checksum `5237b7bd2fd6352c`). The terrain's main-thread JS 0.33 →
+  0.11 ms a frame (Node, driving the road; what's left is choosing what to draw and finding trees).
+- **The cherry and maple models made in a worker** (`tree-worker.js`, one asked at a time; ~1-2 ms
+  each on the main thread before, a frame at a time); after a jump all within SEEN still made at once
+  here. A new one is held back if it's in view within SEEN the first time it could be drawn.
+- **Trees found a few squares a frame** (three new 35 m squares, not ~37 at once every 50 m, ~2.5 ms;
+  all at once after a jump). **Bridges** laid into typed arrays with indices: 3.3 → 0.2 ms a bridge,
+  the hitch as one came near.
+- **The land in one draw**: each slot's vertices a row of an RGBA16I texture (`terrain.vert` reads them
+  by `gl_VertexID`), each chunk drawn a copy (instance), nearest first: 41 draws and 123 calls a frame
+  → 1 and 5. Its squares in serpentine strips six wide, for the vertex cache: through a FIFO cache of
+  16-48 vertices ~1,080 vertex shader runs a chunk instead of 1,860; from 64 up, 961 row by row against
+  1,045-1,065 (simulated; which the Iris has isn't known here: `STRIP` in terrain.js, 30 for row by row).
+- **Trees with indices**: the cherry and maple models (trees.js writes each vertex once: tube rings,
+  card corners, the petals' shared corners), the broadleaf shapes and the bridges. Vertices shaded a
+  frame, driving the road: cherries, maples and bridges 8,563 → 4,884, broadleaf 25,401 → 7,377 (at the
+  cherries: 12,897 → 7,351 and 46,768 → 13,720). Making a model 1.00 → 0.92 ms.
+- **The noise** (rocks, bark, timber, petals: `shaders/noise.glsl`): the eight corners' hashes from
+  three products, 11 integer multiplies a noise instead of 32 (integer multiplies are slow on Intel),
+  the same numbers.
+- **Ground cover**: only copies within their kind's fade + 15 m gathered (whole chunks before): ~500 →
+  ~300 copies a frame; sectors counted from where the camera looks, the nearest bucket in the middle:
+  29 → 18 draws; the fade, sway and bloom set only when they change, and a kind's copies re-pointed only
+  when its run starts elsewhere: 164 → 53 calls. `gatherNature` allocates nothing now.
+- **Bamboo**: its list a 32-bit number an entry (which, bent or not, how much is there), the bends in a
+  second texture uploaded only where any are: ~45 KB uploaded a frame instead of ~74-97. `update`'s
+  culling tests a box only against the planes its chunk's box crosses, a stalk's or clump's in one
+  linear test, the squares walked without dividing: 0.22 → 0.16 ms a frame (Node).
+- **The car's walls** test the trees and boulders within 10 m, found once a frame (every tree, for
+  every point of the car, at every physics step before), and `wallAt` makes no array: 0.06 → 0.004 ms.
+- **The car**: one matrix upload, the body drawn once and the wheel four times as copies: 5 → 2 draws.
+- Trees drawn sorted by insertion (nothing made). `fillBuilt`, `blockWriter` reuse their arrays.
+
+**Work a frame** (`bench/loop.mjs ... count`, frames 3,000-6,000, driving the road from the start; at
+the cherries, -1319,-3126, in brackets):
+
+| | Before | After |
+|---|---|---|
+| WebGL calls | 367 (389) | 134 (154) |
+| Draws | 88 (95) | 35 (41) |
+| Vertices shaded (indexed: each once, a perfect cache) | 204,401 (232,181) | 158,996 (170,242) |
+| Copies (instances) drawn | 509 (513) | 360 (370) |
+| Bytes uploaded | 94,731 (92,176) | 51,452 (50,274) |
+| The land: draws, calls | 41, 123 | 1, 5 |
+| Ground cover: draws, copies, vertices, calls | 29, 499, 61,106, 164 | 18, 306, 37,403, 53 |
+
+**Main thread JS a frame** (Node, V8, 3,000 frames after 3,000, two runs each; the workers played
+between frames):
+
+| Drive | Before: mean, p90, p99, max (ms) | After |
+|---|---|---|
+| The road from the start | 0.53-0.59, 1.38-1.44, 1.83-1.97, 5.2-6.4 | 0.26-0.27, 0.37-0.41, 0.69-0.74, 2.9-3.5 |
+| From the cherries (-1319,-3126) | 0.54-0.57, 1.39-1.42, 1.86-1.89, 3.4-4.6 | 0.27-0.31, 0.42-0.47, 0.70-0.85, 2.6-3.9 |
+| From the bridge (-2284,-71) | 0.55-0.57, 1.40-1.42, 1.93-2.02, 3.4-5.5 | 0.30-0.32, 0.48-0.52, 0.75-0.83, 2.7-2.9 |
+
+By function (CPU profile, the road, ms a frame with what each calls): `frame` 0.67 → 0.34; bamboo's
+`update` 0.22 → 0.16; `terrain.update` 0.33 → 0.11; the physics step 0.08 → 0.02 (walls 0.06 → 0.004).
+The garbage Node measures (~190 KB a frame) is mostly the workers' building in the same process, and
+boxed numbers (V8's: Firefox doesn't box them); on the main thread, ~25 KB a frame.
+
+**GPU, SwiftShader** (headless Chromium, the road, p50 over 450 frames, ms, two alternating runs;
+software rendering, so only which way each pass moved means anything):
+
+| Pass | 576 × 360 before | after | 160 × 100 before | after |
+|---|---|---|---|---|
+| Ground cover | 14.5-14.9 | 12.2-12.5 | 7.6-8.1 | 5.4 |
+| Trees | 14.3-14.6 | 15.2-15.4 | 5.4-5.7 | 5.1-5.4 |
+| The land | 44.3-44.5 | 43.9-44.3 | 16.5-17.2 | 15.7-15.9 |
+| Bamboo leaves, stalks | 58.1-58.3, 12.5 | 58.4-58.6, 12.4-12.7 | 11.2-11.7, 5.7-6.0 | 11.0-11.2, 5.6-5.7 |
+
+The trees read ~5% slower in SwiftShader at 576 × 360 (its pixels, not its vertices, are the cost
+there, and it may take indexed draws differently); a third fewer vertices at 160 × 100. Startup, the
+physics (`bench/physics.mjs`: the same results to the digit) and the land are unchanged.
+
+**Not done, and why.** Fewer fern triangles, or LODs for the stones: a fern fades out by 55 m, at ~35%
+mist, and a swap before that could show. Merging the ground cover's kinds into fewer draws (vertex
+pulling by shape): the Iris measured ~0.16 µs a copy and draws mattering less than vertices (see
+"Bamboo, rain and sky"), and it'd read 4 texels a vertex. Not drawing broadleaf trees past the mist's
+end (400-450 m): mist-coloured, they could still show against the clouds above the treeline. Building
+bamboo's list in a worker: a frame late, the view's edges would need wider culling.
+
+**To measure on the Mac:** (1) GPU per pass in headless Chrome (Metal), `?profile&autodrive=road&size=576x360`,
+before and after alternately: the land (if slower, the strips: `STRIP = 30`), trees, ground cover;
+(2) in Zen, `?profile` driving the road: JS, worst frame and late frames, and that "rows built" stays
+0 (the workers started; Firefox has module workers from 114); (3) Zen's console: the new shader code
+(RGBA16I and R32UI textures read with `texelFetch`, `uniform mat4 uModels[5]` indexed by
+`gl_InstanceID`, bit operations) compiles in Firefox's translation (as `unpackSnorm2x16` once didn't);
+(4) whole-GPU busy and the fans (`bench/sample-system.sh`) before and after.
 
 ### Late arrivals held back, building catches up; where the time goes (3 Oct 2026)
 
@@ -2862,6 +2987,15 @@ What this means:
   with a stress test running in another process, and 0.6–0.9 ms without it.
 - **Startup in the browser pane varies 3×** from load to load (146–480 ms for the same 81 chunks,
   which take 68–84 ms in headless Chrome). Time startup in headless Chrome or a normal window.
+- **SwiftShader is not a GPU** (3 Oct 2026, the cloud box): software rendering at 576 × 360 is
+  bound by pixels (the land 44 ms and the leaves 58 ms of ~155), where the Iris is bound by vertices
+  and draws. Count the work instead (`bench/count.js`), time JS in Node (`bench/loop.mjs`), and for
+  GPU timings compare A and B alternately, at a tiny size (160 × 100) for the work per vertex.
+- **Node's `PerformanceObserver` for `gc` saw nothing inside a synchronous loop** (its entries come
+  when the event loop runs, and a frame count compared as a string never started it): `v8.GCProfiler`
+  reports them synchronously.
+- **`pkill -f pattern` kills the shell running it** when the pattern is on its own command line (it
+  matches itself): kill by process name (`pkill -x chrome`).
 - **A page stuck in a loop doesn't answer the DevTools protocol.** `bench/headless.mjs` just
   waits: look for a Chrome process at 100% CPU, and kill it (`pkill -f remote-debugging-port=9333`).
 
@@ -3150,8 +3284,8 @@ Ranked by the frame-budget measurements (biggest win for fullscreen ultrawide fi
 - [ ] Cheaper terrain fragment shader (measure first; it's the per-pixel part of terrain).
 - JS needs nothing: 0.08 ms of a 20 ms frame.
 - [ ] **Instancing** for trees, rocks, posts, road markings.
-- [x] ~~Terrain generation in Web Workers~~: not needed yet. Building a row at a time within
-      0.5 ms per frame keeps up at full speed (see measurements).
+- [x] **Terrain generation in a Web Worker** (3 Oct 2026): `terrain-worker.js`; the main thread keeps
+      building what's needed at once (holes in view, the ground under the car) and everything without one.
 - [ ] **Precompile all shaders at load** so nothing compiles mid-drive.
 - [ ] **Bake lighting into vertex colours; use fog** for atmosphere and draw distance.
 - [x] **Object pools** for particles (preallocated arrays, live ones first) and chunks (each slot
@@ -3179,7 +3313,8 @@ Ranked by the frame-budget measurements (biggest win for fullscreen ultrawide fi
   and far, clumps drawn, and stalks bent (or springing back).
   Add `&autodrive` to drive circles hands-free (no new terrain gets built), or `&autodrive=road`
   to follow the road (terrain keeps being built), and `&size=3440x1440` to render at a fixed
-  resolution. `&spawn=x,z` starts on the road nearest that point, to measure the same place
+  resolution. `&step=60` moves the game on 1/60 s each frame however long it took (the same drive
+  frame by frame, however slowly a software renderer draws it). `&spawn=x,z` starts on the road nearest that point, to measure the same place
   again (the default: `600,-330`; others used: `-1000,-400`, `2000,1500`; before the cleanup,
   the car actually started 114 m from the given point: see "Cleanup and review"). `&aa` turns
   antialiasing back on and `&nocull` draws every chunk, to measure what each one saves.
@@ -3216,7 +3351,23 @@ Ranked by the frame-budget measurements (biggest win for fullscreen ultrawide fi
   sand out to their frayed edges), and how long its chunks took to build. `node bench/relief.mjs map.png 0 0 2400 2`
   maps 2.4 km around the start at 2 m per pixel.
 - **`bench/headless.mjs`**: runs the game in headless Chrome with key presses, screenshots and
-  profiler reads (usage at the top of the file). Works when the pane is hidden.
+  profiler reads (usage at the top of the file). Works when the pane is hidden. `CHROME` gives
+  Chrome's path (macOS's Google Chrome if not), `ANGLE` the backend (metal on macOS, swiftshader
+  elsewhere: software, pixel-bound, its GPU timings relative only). A step `profile: ms` CPU-profiles
+  the page (top functions as ms a frame; `profileFile` saves it). `COUNT=1` injects `bench/count.js`;
+  `HOLD=n` stops the game after its nth frame, seeds `Math.random` and hides the controls hint
+  (`"held": true` waits for it), and with `?step` that's the same picture every run; `VIEWPORT=576x360`
+  makes screenshots one pixel per pixel. Runs can go side by side (each Chrome picks its own port).
+- **`bench/count.js`**: counts each frame's WebGL work: calls, draws, indices, vertices (the vertex
+  shader's runs with a perfect cache), copies (instances) and bytes uploaded, all told and per program
+  (`window.__counts.report()`). Wraps every call, so it slows the JS: time without it.
+- **`bench/loop.mjs`**: the game itself (main.js) in Node, against a WebGL context that does nothing:
+  the JS a frame takes, to the µs, the same drive every time (`node bench/loop.mjs [frames] [query]
+  [count|garbage|noworker]`); `count` counts the WebGL work (`count.js`), `garbage` samples where the
+  garbage is made. It plays the workers itself, between frames, untimed (their garbage counts, though).
+  `node --cpu-prof bench/loop.mjs` for a CPU profile, and `node bench/cpuprofile.mjs file [frames]`
+  to read it (self and total time a function, a frame).
+- **`bench/diff.mjs`**: how two screenshots differ: pixels, by how much, and where (`a.png b.png [where.png]`).
 - **Controls:** arrows or WASD drive; Space is the handbrake, R puts the car back on its wheels
   (it also happens by itself after 2 s stuck on its side or roof, or leaning over 60°), T tows it
   back to the nearest road (the camera cuts straight there, and the land around is built at once).
