@@ -207,6 +207,27 @@ The cube (`shaders/cube.*`) is no longer in the game, but `bench/frames.html` st
 
 ## Measurements
 
+### Roads cross the rivers at the valley floor: the banks at a bridge as low as anywhere (3 Oct 2026)
+
+Asked for: the banks just along the river from a bridge nearly flat (ideal), but high at the bridge;
+why? Because the land there is the road's, not the river's: a road only partly follows the land
+(`follow`, 0.2-0.95 of the relief), so across a valley it runs up to 3.2 m above the floor, and the
+land beside it is held at its height for the verge (4.5-16.5 m) and only meets the land's own height
+50 m further. The last change brought crossings down to 1.6 m above the water, still 0.8 m above the
+valley floor (0.8 m above the water): the bank at the bridge 1.8 m, along the river 0.8-0.9.
+
+- terrain.js `liftRoad`: a crossing now at the valley floor (`BRIDGE_ABOVE` 0.1 m above it, was
+  `BRIDGE_HIGH` 1.6 m above the water), level for 25 m from the water (was 15) and rising at 3% from
+  there (was 4.5%), so where the road's own bank begins it's further from the river. A node within
+  those 25 m is lowered too (by where it is, so every road there agrees): left as it was, the roads
+  either side of one on a river's bank met it in a 0.8 m crest that threw the car 0.33 s (the bridge
+  drive, one bridge of 68).
+- Now: the banks at the bridges 0.96 m above the water (median; 1.8 before), 0.88 at 30 m along, 0.83
+  from 60 m; decks a median 1.7 m above the water at their highest (the arch).
+- **Checked**: on the road 40 min, 0 jumps, 0 tip-overs; every bridge both ways, never in the air;
+  nothing on the bridges' roads; no cut road vertex past a deck's ends; screenshots at four bridges.
+  Chunks build in the same time (0.72 ms; checksum `db98df67f233ef3d`).
+
 ### Gentle, low banks, as at Japanese river bridges (3 Oct 2026)
 
 Asked for: the banks still steep and a bit high; look at pictures of Japanese bridges. Photos looked at
@@ -3370,7 +3391,8 @@ packs; the low resolution and dither will pull them together, but check side by 
       shelf, reeds, sedge, ferns and bushes on them, bamboo leaning over the water, duckweed, foam and
       bits of culm on it, reflections, arched bridges (see "Livelier rivers"); roads down to the
       water at the crossings, with stones, ferns and sedge on the banks (see "Lower banks"), and the
-      banks gentle and low, as in photos of Japanese bridges (see "Gentle, low banks"). Still to
+      banks gentle and low, as in photos of Japanese bridges (see "Gentle, low banks"), as low at
+      the bridges as anywhere (see "Roads cross the rivers at the valley floor"). Still to
       choose from:
       - The water flowing: its waves, leaves and lily pads drifting downstream (it has no direction
         now: the waves only drift), faster where it's narrower.
