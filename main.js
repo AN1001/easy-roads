@@ -7,7 +7,7 @@ import { createTextures, createPuddles, puddleAt, TEXTURE_SIZE, TEXTURE_LAYERS, 
 import { createBambooModel, createBamboo, LIST_WIDTH, LIST_ROWS, STALK_WIDTH } from './bamboo.js';
 import { createParticles, updateParticles, kickUp, MAX_PARTICLES, PARTICLE_FLOATS } from './particles.js';
 import { createProfiler } from './profiler.js';
-import { BLOCK_FLOATS, shareVertices } from './blocks.js';
+import { BLOCK_FLOATS, blockWriter } from './blocks.js';
 import { bridgeBlocks, bridgeWall } from './bridges.js';
 import { treeModel, treeWall, treesNear, loadBroadleaf, broadleafLook, BROADLEAF_FLOATS } from './trees.js';
 import { scatter, rockWall, copiesNear, KINDS, NATURE_FLOATS, INSTANCE_FLOATS } from './nature.js';
@@ -93,7 +93,13 @@ const DETAIL = [100, 220];  // m
 const AHEAD = 40;           // m
 const BUILD_BUDGET = 1;     // ms
 const SEEN = FOG_START - FOG_THICKNESS * Math.log(1 - 0.96 * (1 - Math.exp(-(FOG_END - FOG_START) / FOG_THICKNESS)));  // m
-const terrain = createTerrain({ draw: FOG_END, ahead: AHEAD, detail: DETAIL });
+// Built in a worker (terrain-worker.js), off the main thread, where one starts (a module worker);
+// terrain.js still builds here, at once, what's needed at once: a hole in view, the ground under the
+// car. (All of it here, within BUILD_BUDGET a frame, until 3 Oct 2026: ~0.25 ms a frame in Node,
+// driving the road, more catching up.)
+let builder = null;
+try { builder = new Worker(new URL('terrain-worker.js', import.meta.url), { type: 'module' }); } catch {}
+const terrain = createTerrain({ draw: FOG_END, ahead: AHEAD, detail: DETAIL, worker: builder });
 // By default, the lane nearest (600, -330), near the middle of the world. Copied, since the next
 // call to nearestRoad reuses the object it answers with.
 const [spawnX, spawnZ, spawnBack] = params.get('spawn')?.split(',') ?? [600, -330];
@@ -183,7 +189,7 @@ const TREE_SLOTS = 48;
 // its trunk, up to TREE_HEIGHT m above its foot.
 // Its near model's made once it's within TREE_DETAIL m.
 const TREE_LOD = 90, TREE_DETAIL = 115, TREE_BOX = 9, TREE_HEIGHT = 14;
-const treesDrawn = [], byRange = (a, b) => a.range - b.range;
+const treesDrawn = [];
 let treesWaiting = [], broadleafTrees = [];
 function createBuiltVao() {
   const vao = gl.createVertexArray();
@@ -198,27 +204,59 @@ function createBuiltVao() {
   gl.bindVertexArray(null);
   return { vao, buffer, indices: 0, type: gl.UNSIGNED_SHORT, size: 2 };
 }
-// Vertices and indices into a built VAO (each new storage: the last may still be drawn from).
-function fillBuilt(built, vertices, indices) {
+// Vertices and indices (the first `floats` and `count` of them) into a built VAO, each new storage:
+// the last may still be drawn from.
+function fillBuilt(built, vertices, indices, floats = vertices.length, count = indices.length) {
+  built.indices = count;
+  if (!count) return;
   gl.bindVertexArray(built.vao);
   gl.bindBuffer(gl.ARRAY_BUFFER, built.buffer);
-  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);  // (the VAO's own)
+  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW, 0, floats);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW, 0, count);  // (the VAO's own)
   gl.bindVertexArray(null);
-  built.indices = indices.length;
   built.size = indices.BYTES_PER_ELEMENT;
   built.type = built.size === 2 ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT;
 }
-const bridgeBuilt = createBuiltVao();
-const treeSlots = Array.from({ length: TREE_SLOTS }, () => Object.assign(createBuiltVao(), { tree: null, near: 0, held: false, range: 0 }));
-// A tree's model into its slot: `detailed`, its near one too; `held`, not drawn yet (see below).
-function makeTree(slot, tree, detailed, held) {
-  const model = treeModel(tree, detailed);
+const bridgeBuilt = createBuiltVao(), bridgeWriter = blockWriter();
+// Per slot: its tree, its model's indices (0: none yet) and its near model's (0: only the far one),
+// whether it's held back (see below), whether it's new (not drawn yet: whether to hold it back is
+// worked out the first time it could be), and whether a model's been asked for (see treeWorker).
+const treeSlots = Array.from({ length: TREE_SLOTS }, () => Object.assign(createBuiltVao(), { tree: null, near: 0, held: false, fresh: false, asked: false, range: 0 }));
+// A tree's model into its slot: `detailed`, its near one too.
+function placeTree(slot, model) {
   fillBuilt(slot, model.vertices, model.indices);
-  slot.tree = tree;
   slot.near = model.near;  // indices
-  slot.held = held;
 }
+function makeTree(slot, tree, detailed) {
+  if (slot.tree !== tree) { slot.tree = tree; slot.fresh = true; slot.held = false; }
+  placeTree(slot, treeModel(tree, detailed));
+}
+// The models are made in a worker (tree-worker.js), one asked for at a time, where one starts: ~1 ms
+// each (Node), one a frame at most made here until 3 Oct 2026. Here still after a jump (all those
+// within SEEN at once: see below), or where the worker can't start.
+let treeWorker = null, treeAsked = null, treeAsks = 0;  // the ask in flight: { id, slot, tree }
+try { treeWorker = new Worker(new URL('tree-worker.js', import.meta.url), { type: 'module' }); } catch {}
+if (treeWorker) {
+  treeWorker.onmessage = ({ data }) => {
+    const ask = treeAsked;
+    if (!ask || ask.id !== data.id) return;
+    treeAsked = null;
+    ask.slot.asked = false;
+    if (ask.slot.tree === ask.tree) placeTree(ask.slot, data);  // (not if its slot's been freed since)
+  };
+  treeWorker.onerror = () => {  // made here from now on; one asked for and lost goes back to waiting
+    treeWorker = null;
+    if (treeAsked) { treeAsked.slot.asked = false; if (!treeAsked.slot.indices) treeAsked.slot.tree = null; treeAsked = null; treesVersion = -1; }
+  };
+}
+function askTree(slot, tree, detailed) {
+  if (slot.tree !== tree) { slot.tree = tree; slot.fresh = true; slot.held = false; slot.indices = 0; slot.near = 0; }
+  slot.asked = true;
+  treeAsked = { id: ++treeAsks, slot, tree };
+  treeWorker.postMessage({ id: treeAsks, tree: { x: tree.x, y: tree.y, z: tree.z, kind: tree.kind, seed: tree.seed,
+    ground: tree.ground, groundStep: tree.groundStep, groundSize: tree.groundSize }, detailed });
+}
+const freeTreeSlot = () => { for (const slot of treeSlots) if (!slot.tree) return slot; return null; };
 const treeInView = tree => boxInFrustum(planes, tree.x - TREE_BOX, tree.y - 1, tree.z - TREE_BOX, tree.x + TREE_BOX, tree.y + TREE_HEIGHT, tree.z + TREE_BOX);
 let builtVersion = -1, treesVersion = -1;
 
@@ -913,16 +951,15 @@ function frame(realMs) {
     uploadedVersion[i] = slot.version;
   }
   if (terrain.bridgesVersion !== builtVersion) {
-    const blocks = [];
-    bridgeBlocks(terrain.bridges, blocks);
-    const bridges = shareVertices(new Float32Array(blocks), BLOCK_FLOATS);
-    fillBuilt(bridgeBuilt, bridges.vertices, bridges.indices);
+    bridgeWriter.n = bridgeWriter.ni = 0;
+    bridgeBlocks(terrain.bridges, bridgeWriter);
+    fillBuilt(bridgeBuilt, bridgeWriter.vertices, bridgeWriter.indices, bridgeWriter.n, bridgeWriter.ni);
     builtVersion = terrain.bridgesVersion;
   }
   if (terrain.treesVersion !== treesVersion) {
     // Free the slots of trees no longer near; the newly found wait for one, nearest first.
     const near = new Set(terrain.trees);
-    for (const slot of treeSlots) if (slot.tree && !near.has(slot.tree)) { slot.tree = null; slot.near = 0; slot.held = false; }
+    for (const slot of treeSlots) if (slot.tree && !near.has(slot.tree)) { slot.tree = null; slot.indices = slot.near = 0; slot.held = false; }
     treesWaiting = terrain.trees.filter(tree => tree.kind !== 'broadleaf' && !treeSlots.some(slot => slot.tree === tree));
     treesWaiting.sort((a, b) => Math.hypot(b.x - camera.x, b.z - camera.z) - Math.hypot(a.x - camera.x, a.z - camera.z));
     // The broadleaf trees, by shape (new storage each time, as the last set may still be drawn).
@@ -944,32 +981,37 @@ function frame(realMs) {
     gl.bindBuffer(gl.ARRAY_BUFFER, shape.instances);
     gl.bufferData(gl.ARRAY_BUFFER, shape.list.subarray(0, 5 * shape.count), gl.DYNAMIC_DRAW);
   }
-  // One tree's model made a frame at most (all at once, as a group came into reach, was a
-  // stutter: up to 21 ms each in headless Chrome, before trees.js wrote them faster): first, the
-  // nearest tree coming within TREE_DETAIL m that has only its far model, its near one too; else the
-  // nearest newly found tree, its far model only. But after a jump, every tree within SEEN m at
-  // once (near ones whole), in the one long frame where the picture changes completely anyway: one
-  // a frame, nearest first, they sprang up round the car (until 3 Oct 2026). And a newly found tree
-  // whose model's made while it's in view, not deep in the mist, came late and would be seen
-  // appearing: it's held back (not drawn) until it's out of view or beyond SEEN.
+  // One tree's model a frame at most (all at once, as a group came into reach, was a stutter: up
+  // to 21 ms each in headless Chrome, before trees.js wrote them faster), or one asked of the worker
+  // at a time: first, the nearest tree coming within TREE_DETAIL m that has only its far model, its
+  // near one too; else the nearest newly found tree, its far model only. But after a jump, every
+  // tree within SEEN m at once (near ones whole), here, in the one long frame where the picture
+  // changes completely anyway: one a frame, nearest first, they sprang up round the car (until 3 Oct
+  // 2026). And a newly found tree whose model came while it's in view, not deep in the mist, came
+  // late and would be seen appearing: it's held back (not drawn) until it's out of view or beyond
+  // SEEN (worked out the first time it could be drawn: below).
   if (jumped) {
     for (let tree = treesWaiting.pop(); tree; tree = treesWaiting.pop()) {
-      const range = Math.hypot(tree.x - camera.x, tree.z - camera.z), slot = treeSlots.find(slot => !slot.tree);
+      const range = Math.hypot(tree.x - camera.x, tree.z - camera.z), slot = freeTreeSlot();
       if (range > SEEN || !slot) { treesWaiting.push(tree); break; }
-      makeTree(slot, tree, range < TREE_DETAIL, false);
+      makeTree(slot, tree, range < TREE_DETAIL);
+      slot.fresh = false;  // (seen at once: the whole picture's new)
     }
   }
-  let detail = null;
-  for (const slot of treeSlots) {
-    if (!slot.tree || slot.near) continue;
-    const range = Math.hypot(slot.tree.x - camera.x, slot.tree.z - camera.z);
-    if (range < TREE_DETAIL && (!detail || range < detail.range)) { detail = slot; detail.range = range; }
-  }
-  const free = detail ? null : treesWaiting.length ? treeSlots.find(slot => !slot.tree) : null;  // (none: more than TREE_SLOTS near, the rest wait)
-  if (detail) makeTree(detail, detail.tree, true, detail.held);
-  else if (free) {
-    const tree = treesWaiting.pop();
-    makeTree(free, tree, false, Math.hypot(tree.x - camera.x, tree.z - camera.z) < SEEN && treeInView(tree));
+  if (!treeAsked) {
+    let detail = null;
+    for (const slot of treeSlots) {
+      if (!slot.tree || !slot.indices || slot.near || slot.asked) continue;
+      const range = Math.hypot(slot.tree.x - camera.x, slot.tree.z - camera.z);
+      if (range < TREE_DETAIL && (!detail || range < detail.range)) { detail = slot; detail.range = range; }
+    }
+    const free = detail ? null : treesWaiting.length ? freeTreeSlot() : null;  // (none: more than TREE_SLOTS near, the rest wait)
+    if (detail) {
+      if (treeWorker) askTree(detail, detail.tree, true); else makeTree(detail, detail.tree, true);
+    } else if (free) {
+      const tree = treesWaiting.pop();
+      if (treeWorker) askTree(free, tree, false); else makeTree(free, tree, false);
+    }
   }
   // The ground cover: when the chunks drawn change, or a tree comes or goes.
   let signature = terrain.drawCount;
@@ -1064,16 +1106,21 @@ function frame(realMs) {
   treesDrawn.length = 0;
   for (const slot of treeSlots) {
     const tree = slot.tree;
-    if (!tree) continue;
+    if (!tree || !slot.indices) continue;
     const inView = treeInView(tree);
     slot.range = Math.hypot(tree.x - camera.x, tree.z - camera.z);
+    if (slot.fresh) { slot.held = inView && slot.range < SEEN; slot.fresh = false; }
     if (slot.held) {
       if (inView && slot.range < SEEN) continue;
       slot.held = false;
     }
-    if (inView) treesDrawn.push(slot);
+    if (!inView) continue;
+    // Into place, nearest first (by insertion: a handful, and nothing made, as sort can).
+    let k = treesDrawn.length;
+    treesDrawn.push(slot);
+    for (; k > 0 && treesDrawn[k - 1].range > slot.range; k--) treesDrawn[k] = treesDrawn[k - 1];
+    treesDrawn[k] = slot;
   }
-  treesDrawn.sort(byRange);
   for (const slot of treesDrawn) {
     gl.bindVertexArray(slot.vao);
     if (slot.range < TREE_LOD && slot.near) gl.drawElements(gl.TRIANGLES, slot.near, slot.type, 0);

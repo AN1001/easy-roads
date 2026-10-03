@@ -4,12 +4,15 @@
 // `count`, counting its WebGL calls, draws, vertices and uploads (bench/count.js, as
 // bench/headless.mjs does in the browser: it slows the JS, so time it without).
 //
-//   node bench/loop.mjs [frames] [query] [count|garbage]
-//     frames:  how many to time, after as many again to warm up (default 1500)
-//     query:   the page's (main.js), default 'autodrive=road'; e.g. 'autodrive=road&spawn=-1000,-400'
-//     count:   count the WebGL work too
-//     garbage: where the garbage is made: the functions allocating the most, sampled (V8's sampling
-//              heap profiler, counting what's collected again too)
+//   node bench/loop.mjs [frames] [query] [count|garbage|noworker]
+//     frames:   how many to time, after as many again to warm up (default 1500)
+//     query:    the page's (main.js), default 'autodrive=road'; e.g. 'autodrive=road&spawn=-1000,-400'
+//     count:    count the WebGL work too
+//     garbage:  where the garbage is made: the functions allocating the most, sampled (V8's sampling
+//               heap profiler, counting what's collected again too)
+//     noworker: no Worker, so the land's built on the main thread, as where a worker can't start
+// The workers (terrain-worker.js, tree-worker.js) are played by this file: what main.js asks of them
+// is made between frames, untimed, as if on another core, and comes back before the next.
 //   node --cpu-prof bench/loop.mjs ...   also writes a CPU profile, to open in Chrome's DevTools
 //
 // Frames come every 1/60 s of the game's time, as fast as Node runs them. V8, as in Chrome: Firefox
@@ -40,6 +43,24 @@ Object.assign(globalThis, {
 });
 let callback = null;
 globalThis.requestAnimationFrame = f => { callback = f; return 1; };
+const { newSlot, buildChunk, packChunk, CHUNK_BYTES } = await import(new URL('terrain.js', ROOT));
+const { treeModel } = await import(new URL('trees.js', ROOT));
+const workers = [];
+if (mode !== 'noworker') {
+  globalThis.Worker = class {
+    constructor(url) { this.trees = String(url).endsWith('tree-worker.js'); this.slots = []; this.spares = []; this.asked = []; workers.push(this); }
+    postMessage(data) { this.asked.push(data); }
+    work() {  // the worker's onmessage, for each ask
+      for (const data of this.asked.splice(0)) {
+        if (this.trees) { this.onmessage({ data: { id: data.id, ...treeModel(data.tree, data.detailed) } }); continue; }
+        if (data.spare) this.spares.push(data.spare);
+        const slot = this.slots[data.level] ??= newSlot(0, data.level);
+        buildChunk(slot, data.cx, data.cz);
+        this.onmessage({ data: packChunk(slot, this.spares.pop() ?? new ArrayBuffer(CHUNK_BYTES)) });
+      }
+    }
+  };
+}
 
 // --- WebGL 2 that does nothing: every method main.js may call, and the constants (their real
 // values: bench/count.js tells types and formats apart by them) ---
@@ -105,6 +126,7 @@ for (let f = 0, time = 0; f < 2 * frames; f++, time += 1000 / 60) {
   const run = callback, start = performance.now();
   run(time);
   if (f >= frames) times[f - frames] = performance.now() - start;
+  for (const worker of workers) worker.work();
 }
 const { statistics } = gc.stop();
 const sorted = Array.from(times).sort((a, b) => a - b), mean = sorted.reduce((s, t) => s + t, 0) / frames;

@@ -49,7 +49,15 @@ export const PILE = material([0.24, 0.19, 0.15], WOOD, UP);
 export const RAIL = material([0.38, 0.31, 0.24], WOOD, ALONG);
 export const POST = material([0.38, 0.31, 0.24], WOOD, UP);
 
-// Lays blocks into `out` (an array of numbers). `frame(ax, ay, az, dx, dz, grade, start)` sets the
+// Where blocks are laid: each vertex's numbers (BLOCK_FLOATS each) and the triangles as their
+// vertices' numbers, in typed arrays grown if need be (`n` floats and `ni` indices of them used): each
+// face's four corners once, and its two triangles by them. (Each triangle's corners its own, pushed
+// onto an array of numbers, until 3 Oct 2026: ~3.3 ms a bridge in Node, a hitch as each came near.)
+export function blockWriter() {
+  return { vertices: new Float32Array(1 << 16), n: 0, indices: new Uint32Array(1 << 15), ni: 0 };
+}
+
+// Lays blocks into `out` (blockWriter's). `frame(ax, ay, az, dx, dz, grade, start)` sets the
 // line they're laid along: from (ax, ay, az), along the unit vector (dx, dz), rising `grade` m per
 // m; `start` m along a longer run of frames, so textures carry on from one to the next. It returns
 // `block(along0, along1, across0, across1, down, up, mat, topMat = mat, level = false)`: a box from
@@ -59,41 +67,57 @@ export const POST = material([0.38, 0.31, 0.24], WOOD, UP);
 export function frame(out, ax, ay, az, dx, dz, grade, start = 0) {
   const sx = dz, sz = -dx;  // across, to the right
   return (along0, along1, across0, across1, down, up, mat, topMat = mat, level = false) => {
-    const corner = (ia, ib, ic) => {
-      const along = ia ? along1 : along0, across = ib ? across1 : across0;
-      const y = (ic ? up : down) + (level && !ic ? 0 : ay + grade * along);
-      return [ax + along * dx + across * sx, y, az + along * dz + across * sz, start + along, across];
-    };
+    // The box's 8 corners (bits 1, 2 and 4 of their number: at along1, across1, up): x, y, z, m along
+    // the run, m across it.
+    for (let k = 0; k < 8; k++) {
+      const along = k & 1 ? along1 : along0, across = k & 2 ? across1 : across0, top = k & 4;
+      const o = 5 * k;
+      box[o] = ax + along * dx + across * sx;
+      box[o + 1] = (top ? up : down) + (level && !top ? 0 : ay + grade * along);
+      box[o + 2] = az + along * dz + across * sz;
+      box[o + 3] = start + along; box[o + 4] = across;
+    }
     const middleA = (along0 + along1) / 2, middleB = (across0 + across1) / 2;
-    const centre = [ax + middleA * dx + middleB * sx, (corner(0, 0, 0)[1] + corner(1, 1, 1)[1]) / 2, az + middleA * dz + middleB * sz];
-    // A face: its corners in order round it, turned to face out of the block (anticlockwise seen
-    // from outside, as the GPU takes the front of a triangle to be). `side`: 0 top or bottom, 1 a
-    // long side (along the line), 2 an end (across it); for which way its texture runs.
-    const face = (side, m, q0, q1, q2, q3) => {
-      let q = [q0, q1, q2, q3];
-      const ux = q1[0] - q0[0], uy = q1[1] - q0[1], uz = q1[2] - q0[2], vx = q3[0] - q0[0], vy = q3[1] - q0[1], vz = q3[2] - q0[2];
-      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-      const n = Math.hypot(nx, ny, nz); nx /= n; ny /= n; nz /= n;
-      if (nx * (q0[0] + q2[0] - 2 * centre[0]) + ny * (q0[1] + q2[1] - 2 * centre[1]) + nz * (q0[2] + q2[2] - 2 * centre[2]) < 0) {
-        q = [q0, q3, q2, q1]; nx = -nx; ny = -ny; nz = -nz;
-      }
-      for (const k of [0, 1, 2, 0, 2, 3]) {
-        const [x, y, z, along, across] = q[k];
-        // u across the grain, v along it.
-        let u, v;
-        if (side === 0) [u, v] = m.grain === ALONG ? [across, along] : [along, across];
-        else if (side === 1) [u, v] = m.grain === ALONG ? [y, along] : [along, y];
-        else [u, v] = m.grain === ACROSS ? [y, across] : [across, y];
-        out.push(x, y, z, nx, ny, nz, u, v, m.color[0], m.color[1], m.color[2], m.layer);
-      }
-    };
-    face(0, topMat, corner(0, 0, 1), corner(0, 1, 1), corner(1, 1, 1), corner(1, 0, 1));  // top
-    face(0, mat, corner(0, 0, 0), corner(1, 0, 0), corner(1, 1, 0), corner(0, 1, 0));     // bottom
-    face(2, mat, corner(0, 0, 0), corner(0, 1, 0), corner(0, 1, 1), corner(0, 0, 1));     // start
-    face(2, mat, corner(1, 0, 0), corner(1, 1, 0), corner(1, 1, 1), corner(1, 0, 1));     // end
-    face(1, mat, corner(0, 0, 0), corner(1, 0, 0), corner(1, 0, 1), corner(0, 0, 1));     // one side
-    face(1, mat, corner(0, 1, 0), corner(1, 1, 0), corner(1, 1, 1), corner(0, 1, 1));     // the other
+    centre[0] = ax + middleA * dx + middleB * sx; centre[1] = (box[1] + box[36]) / 2; centre[2] = az + middleA * dz + middleB * sz;
+    face(out, 0, topMat, 4, 6, 7, 5);  // top
+    face(out, 0, mat, 0, 1, 3, 2);     // bottom
+    face(out, 2, mat, 0, 2, 6, 4);     // start
+    face(out, 2, mat, 1, 3, 7, 5);     // end
+    face(out, 1, mat, 0, 1, 5, 4);     // one side
+    face(out, 1, mat, 2, 3, 7, 6);     // the other
   };
+}
+const box = new Float64Array(40), centre = new Float64Array(3), order = new Int32Array(4);
+
+// A face of the box (its corners' numbers, in order round it), turned to face out of the block
+// (anticlockwise seen from outside, as the GPU takes the front of a triangle to be). `side`: 0 top or
+// bottom, 1 a long side (along the line), 2 an end (across it); for which way its texture runs.
+function face(out, side, m, k0, k1, k2, k3) {
+  const q0 = 5 * k0, q1 = 5 * k1, q2 = 5 * k2, q3 = 5 * k3;
+  const ux = box[q1] - box[q0], uy = box[q1 + 1] - box[q0 + 1], uz = box[q1 + 2] - box[q0 + 2];
+  const vx = box[q3] - box[q0], vy = box[q3 + 1] - box[q0 + 1], vz = box[q3 + 2] - box[q0 + 2];
+  let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+  const n = Math.hypot(nx, ny, nz); nx /= n; ny /= n; nz /= n;
+  order[0] = q0; order[1] = q1; order[2] = q2; order[3] = q3;
+  if (nx * (box[q0] + box[q2] - 2 * centre[0]) + ny * (box[q0 + 1] + box[q2 + 1] - 2 * centre[1]) + nz * (box[q0 + 2] + box[q2 + 2] - 2 * centre[2]) < 0) {
+    order[1] = q3; order[3] = q1; nx = -nx; ny = -ny; nz = -nz;
+  }
+  if (out.n + 4 * BLOCK_FLOATS > out.vertices.length) { const bigger = new Float32Array(2 * out.vertices.length); bigger.set(out.vertices); out.vertices = bigger; }
+  if (out.ni + 6 > out.indices.length) { const bigger = new Uint32Array(2 * out.indices.length); bigger.set(out.indices); out.indices = bigger; }
+  const d = out.vertices, first = out.n / BLOCK_FLOATS;
+  for (let k = 0; k < 4; k++) {
+    const o = order[k], x = box[o], y = box[o + 1], z = box[o + 2], along = box[o + 3], across = box[o + 4];
+    // u across the grain, v along it.
+    const u = side === 0 ? (m.grain === ALONG ? across : along) : side === 1 ? (m.grain === ALONG ? y : along) : (m.grain === ACROSS ? y : across);
+    const v = side === 0 ? (m.grain === ALONG ? along : across) : side === 1 ? (m.grain === ALONG ? along : y) : (m.grain === ACROSS ? across : y);
+    const i = out.n;
+    d[i] = x; d[i + 1] = y; d[i + 2] = z; d[i + 3] = nx; d[i + 4] = ny; d[i + 5] = nz;
+    d[i + 6] = u; d[i + 7] = v; d[i + 8] = m.color[0]; d[i + 9] = m.color[1]; d[i + 10] = m.color[2]; d[i + 11] = m.layer;
+    out.n = i + BLOCK_FLOATS;
+  }
+  const t = out.indices, j = out.ni;
+  t[j] = first; t[j + 1] = first + 1; t[j + 2] = first + 2; t[j + 3] = first; t[j + 4] = first + 2; t[j + 5] = first + 3;
+  out.ni = j + 6;
 }
 
 // For a run of straight pieces (corners: x, y, z, ... along a road), call `piece(block, length,
