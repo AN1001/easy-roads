@@ -207,6 +207,28 @@ The cube (`shaders/cube.*`) is no longer in the game, but `bench/frames.html` st
 
 ## Measurements
 
+### Gentle, low banks, as at Japanese river bridges (3 Oct 2026)
+
+Asked for: the banks still steep and a bit high; look at pictures of Japanese bridges. Photos looked at
+(image search: Togetsukyo at Arashiyama, footbridges at Narai, country footbridges): the banks are
+gentle, ~20-35°, grass right down to a stony margin at the water, which is only 0.5-1 m below the land;
+the bridges low over it. Ours were 56-67° (1.5-2.4 m up per m out), the water 1.5 m below the valley
+floor.
+
+- terrain.js: `RIVER_DROP` 1.5 → 0.8 m; `RIVER_BANK` 1.5 → 0.45 m per m and `BANK_STEEPER` 0.9 → 0.3 (so
+  0.45-0.75 per m, 24-37°); `BRIDGE_HIGH` 2 → 1.6 m. riverBed skips bankHeight's noise wherever the land
+  is below the plain bank (it can only be higher), as the gentler banks reach ~3× further: chunks build
+  in the same time (0.72 ms; checksum `a5ad370fc032e373`).
+- nature.js `banky`: the bank face's stones, ferns and sedge on ground less steep than before (normal's
+  y under 0.92, was 0.8), as the faces are gentler.
+- Now: banks 0.8-0.9 m above the water away from the roads (were 1.5), 1.8 m at the bridges (2.2 in
+  the last change, 4.9 before it); decks a median 2.5 m above the water; bridges a little longer (median
+  45 m, was 43; a tenth over 73, was 63) as the gentler banks cut further into the roads.
+- **Checked**: on the road 40 min, 0 jumps, 0 tip-overs; every bridge driven both ways, never in the
+  air; nothing on the bridges' roads; no cut road vertex past a deck's ends (the uncovered ones are
+  beside the narrower decks, as before: 601 of 7,822, 487 of 6,608 before); screenshots at four
+  bridges and a bank. GPU as the last change (ground cover 2.0-2.3 ms from two bridges).
+
 ### Lower banks at the bridges, stones and plants on the bank faces (3 Oct 2026)
 
 Asked for: the banks far too high in general, though smaller a little way from the bridges; and still
@@ -3347,8 +3369,9 @@ packs; the low resolution and dither will pull them together, but check side by 
 - [ ] **River improvements** (asked for 3 Oct 2026). Done the same day: uneven banks with a muddy
       shelf, reeds, sedge, ferns and bushes on them, bamboo leaning over the water, duckweed, foam and
       bits of culm on it, reflections, arched bridges (see "Livelier rivers"); roads down to the
-      water at the crossings, so the banks there are ~2 m not ~5, with stones, ferns and sedge on
-      their faces (see "Lower banks"). Still to choose from:
+      water at the crossings, with stones, ferns and sedge on the banks (see "Lower banks"), and the
+      banks gentle and low, as in photos of Japanese bridges (see "Gentle, low banks"). Still to
+      choose from:
       - The water flowing: its waves, leaves and lily pads drifting downstream (it has no direction
         now: the waves only drift), faster where it's narrower.
       - Its level: level across, but it follows roadLevel along the river, so it slopes up to ~5% and

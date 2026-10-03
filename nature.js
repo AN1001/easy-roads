@@ -342,7 +342,7 @@ function banky(a, r, t, patch) {
   if (a.depth > -0.3) return r < 0.65 * smoothstep(0.25, 0.6, patch) ? pick(REEDS, t) : -1;
   // (Not on the boulders standing out of the water: the riverbed's byte is all -1 there.)
   if (a.grove < -0.98) return -1;
-  if (a.depth > -10 && a.level < 0.8) {
+  if (a.depth > -10 && a.level < 0.92) {
     return r < 0.16 ? pick(BANK_STONES, t) : r < 0.26 ? pick(FERNS, t) : r < 0.5 ? pick(SEDGE, t) : -1;
   }
   return (a.grove < 0 || a.depth > -1.2) && r < 0.35 ? pick(SEDGE, t) : -1;

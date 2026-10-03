@@ -569,7 +569,7 @@ const landLift = (x, z) => follow(x, z) * relief(x, z);
 // grade-limited, while the land beyond the verges sank to the valley floor, 1.5 m above the water:
 // the decks stood a median 5.7 m above it (a tenth over 18 m), and the banks beside them as high,
 // 1.5 m again 60 m along the river.
-const BRIDGE_HIGH = 2, RIVER_FLAT = 15, RIVER_GRADE = 0.045;  // m, m, -
+const BRIDGE_HIGH = 1.6, RIVER_FLAT = 15, RIVER_GRADE = 0.045;  // m, m, -
 const dip = new Float64Array(2 * MAX_SPAN + 1);
 // Each corner's lift the average of those up to `reach` corners either side (fewer near the ends,
 // so the ends stay as they are). Keeps the unsmoothed ends in `lifted`.
@@ -769,8 +769,8 @@ const RIVER_WAVE = 2400;     // m: the noise's scale (rivers are ~1-2 km apart)
 const MEANDER_RIVER = 0.1, RIVER_MEANDER_WAVE = 350;  // the finer noise: how much of it, and its scale (m)
 const RIVER_HALF = 6;        // m: half the water's width
 const RIVER_VALLEY = 350;    // m from the water: the land sinks to the valley floor within this
-const RIVER_DROP = 1.5;      // m: the water below the valley floor (roadLevel - VALLEY)
-const RIVER_BANK = 1.5;      // m up per m out: how steep the banks are
+const RIVER_DROP = 0.8;      // m: the water below the valley floor (roadLevel - VALLEY) (1.5 before 3 Oct 2026)
+const RIVER_BANK = 0.45;     // m up per m out: how steep the banks are (1.5 before 3 Oct 2026)
 const RIVER_STEP = 2;        // m: for the noise's slope
 const RIVER_DEPTH = 1.6;     // m: the bed below the water, at the middle (less towards the sides): the car half under
 const BED_BUMPS = 0.5, BED_WAVE = 6;          // m: the bed's unevenness, and its scale
@@ -787,7 +787,7 @@ const BIG_CELL = 16, BIG_ODDS = 0.3, BIG_RADIUS = 1.1, BIG_RADIUS_MORE = 0.8, BI
 // under the water to SHELF_OUT × how far the edge wandered in, above it. All of it only ever higher
 // than the plain bank, which is what findBridges asks about (riverCuts): so wherever it says a road
 // isn't cut, it isn't.
-const BANK_IN = 1.8, BANK_IN_WAVE = 23, BANK_STEEPER = 0.9, BANK_STEEP_WAVE = 41;
+const BANK_IN = 1.8, BANK_IN_WAVE = 23, BANK_STEEPER = 0.3, BANK_STEEP_WAVE = 41;
 const SHELF = 0.3, SHELF_UNDER = 1.5, SHELF_OUT = 0.8;
 const BANK_LUMPS = 0.5, BANK_LUMP_WAVE = 4.5, BANK_KNOB_WAVE = 1.9;
 const WET_FROM = 0.5, WET_TO = 2.5;  // m past the water's edge: the bank's riverbed fades into the land
@@ -870,7 +870,9 @@ function bankHeight(x, z, river, water) {
 // middle, uneven, with boulders.
 function riverBed(x, z, height, river) {
   if (river >= RIVER_HALF + (HIGHEST + VALLEY + RIVER_DROP) / RIVER_BANK) return height;  // the banks are higher than any land here
-  const water = waterLevel(x, z), bank = bankHeight(x, z, river, water);
+  const water = waterLevel(x, z);
+  if (height <= water + RIVER_BANK * (river - RIVER_HALF)) return height;  // (lower than the plain bank: so than the bank)
+  const bank = bankHeight(x, z, river, water);
   let bed = bank;
   if (bank < water + BOULDER_TOP) {  // (else above the tallest of the small boulders)
     const middle = river / RIVER_HALF;
