@@ -86,7 +86,8 @@ const RETURNS = {
   getSyncParameter: () => 0x9119,
 };
 const METHODS = ['activeTexture', 'attachShader', 'beginQuery', 'bindBuffer', 'bindBufferBase', 'bindBufferRange', 'bindTexture',
-  'bindVertexArray', 'blendFunc', 'bufferData', 'bufferSubData', 'clear', 'clearColor', 'clientWaitSync', 'colorMask', 'compileShader',
+  'bindFramebuffer', 'bindRenderbuffer', 'blitFramebuffer', 'createFramebuffer', 'createRenderbuffer', 'framebufferRenderbuffer',
+  'framebufferTexture2D', 'renderbufferStorageMultisample', 'bindVertexArray', 'blendFunc', 'bufferData', 'bufferSubData', 'clear', 'clearColor', 'clientWaitSync', 'colorMask', 'compileShader',
   'copyBufferSubData', 'createBuffer', 'createProgram', 'createQuery', 'createShader', 'createTexture', 'createVertexArray', 'deleteBuffer',
   'deleteQuery', 'deleteSync', 'deleteTexture', 'deleteVertexArray', 'depthFunc', 'depthMask', 'disable', 'disableVertexAttribArray',
   'drawArrays', 'drawArraysInstanced', 'drawElements', 'drawElementsInstanced', 'drawRangeElements', 'enable', 'enableVertexAttribArray',

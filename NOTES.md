@@ -207,6 +207,65 @@ The cube (`shaders/cube.*`) is no longer in the game, but `bench/frames.html` st
 
 ## Measurements
 
+### Livelier rivers: reflections, uneven banks and plants on them, arched bridges (3 Oct 2026)
+
+Asked for: the rivers looked bland; the user's guesses: (1) banks completely even, (2) bare banks,
+just a texture, (3) little on the water but lily pads, (4) water not reflective, (5) flat bridges.
+
+- **Banks** (terrain.js `bankHeight`): the water's edge wanders in by up to 1.8 m (noise at 23 m); the
+  banks rise 1.5-2.4 m per m out (noise at 41 m); lumps of up to 0.5 m (noise at 4.5 and 1.9 m); and
+  at the waterline, where the edge has wandered in, a muddy shelf rising only 0.3 per m, from 1.5 m out
+  under the water. All of it only ever higher than the plain bank, which is what findBridges asks about,
+  so a road the river cuts is still always on a bridge (checked: no road vertex newly cut and not under
+  a deck, at 66 bridges; the ones that aren't are the same strip beside the narrower decks as before).
+  The riverbed's wet band follows the wandering edge. Chunks build in the same time (0.72 ms).
+- **On the banks** (nature.js `banky`, level-0 chunks near a river, 1.2 m squares): reeds with bulrushes
+  in beds, from 40 cm deep to 30 cm above the water (mostly on the shelf), and sedge tussocks up the wet
+  bank; ferns up the banks however steep, and more bushes on them (0.3, from level 0.5). Reeds and sedge
+  fade by 40-55 m, as the ferns. (The old REEDS kind, off with the grass, is back for this.) ~33 more
+  copies per river chunk. Bamboo near a river leans out over the water as it does over a road
+  (plantBamboo: from up to 10 m back from where it starts, 2 m from the water).
+- **On the water** (water.frag `floating`): mats of duckweed in the shallows and in patches out from
+  them, speckled up close; a broken scum of foam where it's under 22 cm deep (at the banks, round the
+  boulders), slowly stirring; bits of bamboo culm, 0.8-2.2 m, with dark nodes, drifting a little. The
+  fallen leaves now look in the 4 nearest squares, not 9 (they never drift further).
+- **Reflections** (water.frag `reflected`): the frame is now drawn into a framebuffer of our own
+  (main.js `scene`: colour and depth renderbuffers), and just before the water its colour and depth are
+  copied into textures (`copy`, units 9 and 10) for water.frag to read; at the end its colour is copied
+  onto the canvas (which has no depth buffer now). Per water pixel, the reflected ray is stepped through
+  the copied depth: 10 steps from 0.6 m, 1.6× further each (to ~40 m), and on passing behind something,
+  narrowed in 3 halvings; only if it's then within 0.6 m (+2% of the distance) behind it is it a hit
+  (else it passed behind something in front, like a trunk between camera and water, and steps on).
+  Where it finds nothing, or leaves the screen, the sky as before; it fades out at the screen's edges.
+  The screen position along the ray is linear in the distance before the divide by w, so a step is one
+  multiply-add, not a matrix. Reflection 0.5 of the colour looking straight down (was 0.3), almost all
+  at a glancing angle. None under thick mist (90%) or what fully covers the water. `?aa` still works: the
+  scene's framebuffer is multisampled then, and the copies resolve it.
+- **Arched bridges** (terrain.js `arch`): each deck rises in a sin² arch, 0.9 m in the middle (less on
+  short bridges: bending no tighter than a 120 m curve over the top), its corners every 2 m. At an
+  80 m curve the car left the deck for up to 0.08 s over the top at 25 m/s; at 120 m, never (every
+  bridge in 12 × 12 km driven over both ways, `followTheRoad`); bench/physics.mjs on the road unchanged
+  (40 min, 0 jumps, 0 tip-overs). The JS a frame is the same from a bridge (bench/loop.mjs, 0.28-0.34 ms).
+- **Cost** (headless Chrome on this Mac, Metal, 576 × 360, `?profile&step=60`; GPU p50, ms):
+
+  | | Old | New |
+  |---|---|---|
+  | Water, from a bank with the river filling much of the view (`-2324,-117,at,100`) | 0.89 | 1.38 |
+  | Water, from a bank along a river (`-5061,-159,at,177`) | 0.48 | 0.77 |
+  | Water, from two bridges (`-4560,-4086,back`, `-5020,2301`) | 0.29 | 0.42-0.47 |
+  | Ground cover at three bridges (the bank plants) | 0.92-1.16 | 1.19-1.43 |
+  | Clearing + copying onto the canvas (`present`), away from rivers | ~0.06 (clear) | 0.02 + 0.07 |
+
+  Of the water's 1.38 ms at the worst view: reflections ~0.6, leaves 0.2, the rest ~0.1 each. Tried and
+  dropped: 16 steps (+0.2 ms, hardly different to see), 6 steps of 2× (bridges' piles lost from the
+  reflection), sinking the water layer's dry vertices below the ground so the depth test drops them
+  (no faster). Timings from a spawn on a bank move about (the car rolls down it): compare with
+  `&step=60`. Not measured in Zen: Firefox has no GPU timers; watch the frame time near a river.
+- **Checked**: nothing grows on the bridges' roads (bench/bridges.mjs, 69 bridges); screenshots at four
+  rivers and a bridge (old and new side by side); `?aa`.
+- **New**: `?spawn=x,z,at,degrees` puts the car exactly there, off the road too, facing that way: to look
+  along a river from its bank. The profiler shows `water` and `present`.
+
 ### Nothing grows on the bridges' roads (3 Oct 2026)
 
 Asked for: rocks and bamboo (perhaps ferns and bushes too) growing on bridges and their approaches,
@@ -3247,15 +3306,16 @@ packs; the low resolution and dither will pull them together, but check side by 
 
 - [ ] **Postage stamps to collect across the map** (asked for 2 Oct 2026). Done so far: rivers, and
       timber bridges whose railings stop the car (see those notes).
-- [ ] **River improvements** (asked for 3 Oct 2026; not started). Ideas, to choose from:
+- [ ] **River improvements** (asked for 3 Oct 2026). Done the same day: uneven banks with a muddy
+      shelf, reeds, sedge, ferns and bushes on them, bamboo leaning over the water, duckweed, foam and
+      bits of culm on it, reflections, arched bridges (see "Livelier rivers"). Still to choose from:
       - The water flowing: its waves, leaves and lily pads drifting downstream (it has no direction
-        now: the waves only drift), faster where it's narrower, foam round the boulders and piles.
+        now: the waves only drift), faster where it's narrower.
       - Its level: level across, but it follows roadLevel along the river, so it slopes up to ~5% and
         can run uphill; falling only one way, with small rapids or weirs where it drops.
-      - Shape: every river is 12 m wide with the same banks; wider and narrower stretches, pools,
-        shingle beaches on the inside of bends, gentler banks in places, now and then a stream joining.
-      - Life on the banks: reeds went with the grass (GRASS off); a cheaper reed bed, ferns and
-        overhanging bamboo on the banks, mist lying lower over the water.
+      - Shape: every river is still ~12 m wide; wider and narrower stretches, pools, shingle beaches on
+        the inside of bends, now and then a stream joining.
+      - Mist lying lower over the water.
       - Sound: running water as the car comes near, louder over a bridge.
       - Crossings: a ford where a lane meets a shallow stretch, stepping stones, a stamp by the water.
 - [ ] **Map rework: a rainy bamboo forest at dusk.** See "Plan: the map rework" above; phases 1-4
@@ -3347,7 +3407,7 @@ Ranked by the frame-budget measurements (biggest win for fullscreen ultrawide fi
   from the old session folder, so the server runs in a Terminal tab instead.)
 - **In-game profiler:** `http://localhost:8001/?profile` shows the worst frame gap, late frames
   in the last 10 s (a refresh or more late), JS time and GPU time per pass (clear / car / stalks /
-  terrain / leaves / clumps / particles / rain / sky; not in Firefox, which has no timer queries) once a
+  terrain / leaves / clumps / particles / rain / sky / trees / nature / water / present; not in Firefox, which has no timer queries) once a
   second, plus chunks drawn, terrain rows built, particles in the air, bamboo stalks drawn near
   and far, clumps drawn, and stalks bent (or springing back).
   Add `&autodrive` to drive circles hands-free (no new terrain gets built), or `&autodrive=road`
@@ -3355,7 +3415,8 @@ Ranked by the frame-budget measurements (biggest win for fullscreen ultrawide fi
   resolution. `&step=60` moves the game on 1/60 s each frame however long it took (the same drive
   frame by frame, however slowly a software renderer draws it). `&spawn=x,z` starts on the road nearest that point, to measure the same place
   again (the default: `600,-330`; others used: `-1000,-400`, `2000,1500`; before the cleanup,
-  the car actually started 114 m from the given point: see "Cleanup and review"). `&aa` turns
+  the car actually started 114 m from the given point: see "Cleanup and review"); `&spawn=x,z,at,90`
+  puts it exactly there, off the road too, facing 90° (+x; 0 is +z). `&aa` turns
   antialiasing back on and `&nocull` draws every chunk, to measure what each one saves.
   The pane's Viewport menu (or a custom emulated size) tests the render size for real.
   `profiler.report()` in the console gives full stats (mean / p50 / p99 / max, dropped frames).

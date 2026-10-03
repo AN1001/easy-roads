@@ -107,10 +107,10 @@ function flower(m, random, x, z, height, color) {
 }
 const FLOWER_COLORS = [[0.85, 0.84, 0.76], [0.85, 0.66, 0.14], [0.52, 0.38, 0.72], [0.82, 0.48, 0.58]];  // white, buttercup, violet, pink
 
-// Reeds: tall, straight, narrow, darker; and one or two bulrushes, each a brown head on a stem.
+// Reeds: tall, straight, narrow, darker; and one to three bulrushes, each a brown head on a stem.
 function reeds(m, random) {
-  tuft(m, random, 9, 1.2, 0.25, 0.035, 0.15, [0.06, 0.09, 0.04], [0.20, 0.27, 0.11], [0.30, 0.29, 0.14]);
-  const heads = 1 + Math.floor(random() * 2);
+  tuft(m, random, 10, 1.25, 0.25, 0.035, 0.3, [0.06, 0.09, 0.04], [0.20, 0.27, 0.11], [0.30, 0.29, 0.14]);
+  const heads = 1 + Math.floor(random() * 3);
   for (let k = 0; k < heads; k++) {
     const x = (random() - 0.5) * 0.15, z = (random() - 0.5) * 0.15, h = 1.2 + 0.3 * random();
     blade(m, x, z, 1, 0, h, 0.04, 0.02, BLADE_ROOT, [0.2, 0.25, 0.1], h);
@@ -238,7 +238,7 @@ function rock(m, random, x, z, radii, buried, lumps = 0.35, shape = ball) {
 // --- The kinds ---
 
 // Squares (m) for each (see scatter).
-const TUFT_CELL = 1, FERN_CELL = 3, BUSH_CELL = 6, ROCK_CELL = 5;
+const TUFT_CELL = 1, BANK_CELL = 1.2, FERN_CELL = 3, BUSH_CELL = 6, ROCK_CELL = 5;
 
 // Each: its model, how big each copy is (× the model, from the first to the second at random), how
 // far it's seen, how far its top stirs in the wind (m), for a boulder, how far round it stops the
@@ -256,7 +256,11 @@ const FLOWERS = FLOWER_COLORS.map((color, k) => kind(30 + k, [0.8, 1.2], GRASS_F
   tuft(m, r, 7, 0.3, 0.35, 0.05);
   for (let f = 0; f < 3 + k % 2; f++) flower(m, r, (r() - 0.5) * 0.3, (r() - 0.5) * 0.3, 0.35 + 0.2 * r(), FLOWER_COLORS[(k + (f === 2 ? 1 : 0)) % FLOWER_COLORS.length]);
 }));
-const REEDS = [1, 2].map(k => kind(40 + k, [0.8, 1.2], GRASS_FADE, 0.12, reeds));
+// The rivers' banks (3 Oct 2026; reeds with the grass, off, before): reeds at the water's edge and in
+// the shallows, and sedge, rough tussocks of it, up the banks; seen as far as the ferns.
+const REEDS = [1, 2, 3].map(k => kind(40 + k, [0.8, 1.3], FERN_FADE, 0.12, reeds));
+const SEDGE = [1, 2].map(k => kind(44 + k, [0.8, 1.3], FERN_FADE, 0.1,
+  (m, r) => tuft(m, r, 9, 0.55 + 0.1 * k, 0.45, 0.06, 0.25, [0.06, 0.08, 0.04], [0.21, 0.27, 0.10], [0.36, 0.33, 0.15])));
 const FERNS = [1, 2, 3].map(k => kind(50 + k, [0.8, 1.4], FERN_FADE, 0.06, (m, r) => fern(m, r, 6 + k, 0.8 + 0.15 * k)));
 const BUSHES = [[0.7, 0.6, 0.7], [1.0, 0.5, 0.85], [0.55, 0.85, 0.6], [0.85, 0.7, 0.8]]
   .map((radii, k) => kind(60 + k, [0.9, 1.5], BUSH_FADE, 0.05, (m, r) => bush(m, r, radii, BUSH_CARDS)));
@@ -269,8 +273,8 @@ const SLABS = [kind(100, [0.8, 1.3], ROCK_FADE, 0, (m, r) => rock(m, r, 0, 0, [0
 export const BOULDER_RADIUS = 1.0;  // m, at size 1
 const BOULDERS = [1, 2].map(k => kind(110 + k, [0.9, 1.3], ROCK_FADE, 0, (m, r) => rock(m, r, 0, 0, [1.15, 0.85 + 0.15 * k, 1.0], 0.25, 0.3), BOULDER_RADIUS));
 // (The solid ones first: they hide some of the bushes.)
-export const KINDS = [...(GRASS ? [...TUFTS, ...TALL, ...FLOWERS, ...REEDS] : []), ...FERNS, ...STONES, ...ROCKS, ...SLABS, ...BOULDERS, ...BUSHES, ...IN_FLOWER];
-for (const [list, cell, level] of [[TUFTS, TUFT_CELL, 0], [TALL, TUFT_CELL, 0], [FLOWERS, TUFT_CELL, 0], [REEDS, TUFT_CELL, 0], [FERNS, FERN_CELL, 0],
+export const KINDS = [...(GRASS ? [...TUFTS, ...TALL, ...FLOWERS] : []), ...REEDS, ...SEDGE, ...FERNS, ...STONES, ...ROCKS, ...SLABS, ...BOULDERS, ...BUSHES, ...IN_FLOWER];
+for (const [list, cell, level] of [[TUFTS, TUFT_CELL, 0], [TALL, TUFT_CELL, 0], [FLOWERS, TUFT_CELL, 0], [REEDS, BANK_CELL, 0], [SEDGE, BANK_CELL, 0], [FERNS, FERN_CELL, 0],
   [STONES, ROCK_CELL, 1], [ROCKS, ROCK_CELL, 1], [SLABS, ROCK_CELL, 1], [BOULDERS, ROCK_CELL, 1], [BUSHES, BUSH_CELL, 1], [IN_FLOWER, BUSH_CELL, 1]]) {
   for (const k of list) Object.assign(k, { cell, level });
 }
@@ -288,7 +292,7 @@ function random(x, z, seed) {
 // same triangles as the land's drawn), m from the road's edge (its `edges`: where a river cuts the
 // road away under a bridge, still the road, though it isn't painted), the grove's byte (/127: the bamboo's
 // thickness, or, negative, how much riverbed), and the ground's normal's y (how level it is).
-const at = { height: 0, edge: 0, grove: 0, level: 0 };
+const at = { height: 0, edge: 0, grove: 0, level: 0, depth: 0 };
 function sample(slot, x, z) {
   const v = slot.vertices, s = slot.spacing, S = VERTEX_SHORTS, next = CHUNK_VERTS * S;
   const gx = Math.min(Math.floor(x / s), CHUNK_QUADS - 1), gz = Math.min(Math.floor(z / s), CHUNK_QUADS - 1);
@@ -301,6 +305,10 @@ function sample(slot, x, z) {
   const ga = g(o + 3), gb = g(o + S + 3), gc = g(o + next + 3), gd = g(o + next + S + 3);
   at.grove = (ga + (gb - ga) * fx + (gc - ga) * fz + (ga - gb - gc + gd) * fx * fz) / 127;
   at.level = Math.min(v[o + 2] >> 8, v[o + S + 2] >> 8, v[o + next + 2] >> 8, v[o + next + S + 2] >> 8) / 127;
+  // How deep the water is (m; negative above it), from the water's layer (terrain.js: slot.water),
+  // where all four corners have it; else -10 (far above any).
+  const w = slot.water, wa = w[2 * p + 1], wb = w[2 * p + 3], wc = w[2 * (p + CHUNK_VERTS) + 1], wd = w[2 * (p + CHUNK_VERTS) + 3];
+  at.depth = Math.min(wa, wb, wc, wd) <= -1000 ? -10 : 0.01 * (wa + (wb - wa) * fx + (wc - wa) * fz + (wa - wb - wc + wd) * fx * fz);
   return at;
 }
 
@@ -315,15 +323,30 @@ function grassy(a) {
   const p = a.edge < 3 ? 0.85 : 0.06 + 0.85 * (1 - a.grove) ** 2;
   return a.level < 0.6 ? 0.3 * p : a.level < 0.85 ? 0.6 * p : p;
 }
-// How likely a fern: under the bamboo and along its edges, not on the verge.
+// What grows on a river's bank, if anything (-1 nothing; the random numbers `r`, `t` choose):
+// reeds from 40 cm deep to 30 cm above the water, in beds (`patch`, 0 to 1, how thick they are
+// there); above them, up the wet bank, sedge. Not on the road or beside it.
+function banky(a, r, t, patch) {
+  if (a.edge < 2.5 || a.depth > 0.4 || a.grove >= 0 && a.depth < -1.2) return -1;
+  if (a.depth > -0.3) return r < 0.65 * smoothstep(0.25, 0.6, patch) ? pick(REEDS, t) : -1;
+  // (Not on the boulders standing out of the water: the riverbed's byte is all -1 there.)
+  return r < 0.35 && a.grove > -0.98 ? pick(SEDGE, t) : -1;
+}
+const smoothstep = (from, to, x) => { const t = Math.min(Math.max((x - from) / (to - from), 0), 1); return t * t * (3 - 2 * t); };
+// How likely a fern: under the bamboo and along its edges, not on the verge; and up the rivers'
+// banks, however steep, above the sedge.
 function ferny(a) {
-  if (a.edge < 2.5 || a.grove < 0.12 || a.level < 0.7) return 0;
+  if (a.edge < 2.5) return 0;
+  if (a.grove < 0.12) return (a.grove < 0 || a.depth > -10) && a.grove > -0.7 && a.depth < -0.8 && a.level > 0.4 ? 0.3 : 0;
+  if (a.level < 0.7) return 0;
   return a.grove < 0.4 ? 0.35 : 0.22;
 }
 // How likely a bush: thickest along the groves' edges, some in the clearings and on the banks,
 // few deep in the bamboo; none on or beside the road, or on steep ground.
 function bushy(a) {
-  if (a.edge < 2.5 || a.grove < -0.45 || a.level < 0.8) return 0;
+  if (a.edge < 2.5 || a.grove < -0.45) return 0;
+  if (a.grove < 0.05 && a.depth > -10) return a.depth < -0.8 && a.level > 0.5 ? 0.3 : 0;  // up a river's bank
+  if (a.level < 0.8) return 0;
   if (a.grove < 0) return 0.3;
   const g = a.grove;
   return g < 0.1 ? 0.12 : g < 0.7 ? 0.4 : 0.06;
@@ -355,11 +378,13 @@ export function scatter(slot) {
       }
     }
   };
+  if (slot.level === 0 && slot.wet) {
+    over(BANK_CELL, 380, (a, i, j) => banky(a, random(i, j, 390), random(i, j, 391), random(Math.floor(i / 4), Math.floor(j / 4), 392)));
+  }
   if (GRASS && slot.level === 0) {
     over(TUFT_CELL, 300, (a, i, j) => {
       if (random(i, j, 310) >= grassy(a)) return -1;
       const r = random(i, j, 311);
-      if (a.grove < 0) return pick(REEDS, r);
       // In the open: tall ones and wildflowers among them.
       const open = a.edge > 3 && a.grove < 0.2;
       return open && r < 0.1 ? pick(FLOWERS, r / 0.1) : open && r < 0.25 ? pick(TALL, (r - 0.1) / 0.15) : pick(TUFTS, r);

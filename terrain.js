@@ -753,6 +753,16 @@ const BOULDER_TOP = 0.35;    // m: the tallest break the water by up to this
 // BIG_ODDS has one, somewhere in its middle half, BIG_RADIUS m across (and up to BIG_RADIUS_MORE more),
 // its top BIG_TOP m above the water (and up to BIG_TOP_MORE more); only if it's in the water.
 const BIG_CELL = 16, BIG_ODDS = 0.3, BIG_RADIUS = 1.1, BIG_RADIUS_MORE = 0.8, BIG_TOP = 0.4, BIG_TOP_MORE = 0.8;  // m
+// The banks aren't even (bankHeight): the water's edge wanders in by up to BANK_IN m (noise at
+// BANK_IN_WAVE m), they're RIVER_BANK to RIVER_BANK + BANK_STEEPER up per m out (BANK_STEEP_WAVE),
+// and lumpy (BANK_LUMPS m, noise at BANK_LUMP_WAVE, and half that at BANK_KNOB_WAVE). At the water's
+// edge, a muddy shelf, rising only SHELF per m (where reeds grow: nature.js), from SHELF_UNDER m out
+// under the water to SHELF_OUT × how far the edge wandered in, above it. All of it only ever higher
+// than the plain bank, which is what findBridges asks about (riverCuts): so wherever it says a road
+// isn't cut, it isn't.
+const BANK_IN = 1.8, BANK_IN_WAVE = 23, BANK_STEEPER = 0.9, BANK_STEEP_WAVE = 41;
+const SHELF = 0.3, SHELF_UNDER = 1.5, SHELF_OUT = 0.8;
+const BANK_LUMPS = 0.5, BANK_LUMP_WAVE = 4.5, BANK_KNOB_WAVE = 1.9;
 const WET_FROM = 0.5, WET_TO = 2.5;  // m past the water's edge: the bank's riverbed fades into the land
 const WATER_REACH = 4;       // m past the water's edge: the water's layer is kept for vertices within this
 const RIVER_STRAIGHT_FROM = 20, RIVER_STRAIGHT_TO = 150;  // m from the water: roads stop bending, and start to (wind)
@@ -770,6 +780,13 @@ const BRIDGE_NARROW = 0.7;
 // carried straight on, BRIDGE_LIFT above the road (`drive`), as the sunk ends' kink threw it at
 // speed (bench/physics.mjs: 4 jumps and a tip-over in 40 min on the road, from 0).
 const BRIDGE_SINK = 0.1, BRIDGE_SINK_REACH = 1.5;  // m   // and then only this much as wide (narrower than the road: one car at a time)
+// Each deck rises in a gentle arch (3 Oct 2026; flat before): ARCH m at the middle (sin², so level
+// where it meets the road at each end), less on a short bridge, so that over its top it bends no
+// tighter than a curve of ARCH_RADIUS m (0.9 m from 46 m long, 0.7 m at 40, 0.4 m at 30); its
+// corners every ARCH_STEP m at most, so it's drawn and driven as a curve. At 80 m the car, on its
+// springs, left the deck over the top for up to 0.08 s at 25 m/s; at 120, never (every bridge in
+// 12 × 12 km driven both ways).
+const ARCH = 0.9, ARCH_RADIUS = 120, ARCH_STEP = 2;  // m
 
 // The rivers' noise: 0 in the middle of a river.
 function riverNoise(x, z) {
@@ -807,12 +824,26 @@ function riverAcross(x, z) {
 const riverDistance = (x, z) => Math.abs(riverAcross(x, z));
 // The water's height at (x, z).
 const waterLevel = (x, z) => roadLevel(x, z) - VALLEY - RIVER_DROP;
+// How far in the water's edge has wandered at (x, z) (see BANK_IN): `river` + this is how far
+// out from the edge a point is, as the banks' wet earth goes (buildRow).
+const bankIn = (x, z) => BANK_IN * Math.max(0.5 + 0.5 * noise(x / BANK_IN_WAVE, z / BANK_IN_WAVE, 190), 0);
+// The bank's height at (x, z), `river` m from the river's middle, the water at `water`.
+function bankHeight(x, z, river, water) {
+  const wandered = bankIn(x, z), out = river - RIVER_HALF + wandered, shelf = SHELF_OUT * wandered;
+  const steep = RIVER_BANK + BANK_STEEPER * Math.max(0.5 + 0.5 * noise(x / BANK_STEEP_WAVE, z / BANK_STEEP_WAVE, 191), 0);
+  if (out < -SHELF_UNDER) return water - SHELF * SHELF_UNDER + steep * (out + SHELF_UNDER);  // (under the water)
+  if (out < shelf) return water + SHELF * out;
+  const lumps = BANK_LUMPS * Math.max(0.5 + 0.35 * noise(x / BANK_LUMP_WAVE, z / BANK_LUMP_WAVE, 192)
+    + 0.15 * noise(x / BANK_KNOB_WAVE, z / BANK_KNOB_WAVE, 193), 0);
+  // (The lumps grow in from the shelf's back, so it stays smooth.)
+  return water + SHELF * shelf + steep * (out - shelf) + lumps * smoothstep(0, 1.5, out - shelf);
+}
 // The land's height at (x, z), `river` m from the middle of a river, cut down to its banks where
 // it's higher than they are; in the river, the banks carry on down to its bed: deepest in the
 // middle, uneven, with boulders.
 function riverBed(x, z, height, river) {
   if (river >= RIVER_HALF + (HIGHEST + VALLEY + RIVER_DROP) / RIVER_BANK) return height;  // the banks are higher than any land here
-  const water = waterLevel(x, z), bank = water + RIVER_BANK * (river - RIVER_HALF);
+  const water = waterLevel(x, z), bank = bankHeight(x, z, river, water);
   let bed = bank;
   if (bank < water + BOULDER_TOP) {  // (else above the tallest of the small boulders)
     const middle = river / RIVER_HALF;
@@ -1046,7 +1077,7 @@ function buildRow(slot) {
     v[o + 1] = Math.min(Math.max(Math.round(edge * 100), -32767), 32767);
     // The grove; its normal's z joins it below. In the river and on its wet banks, instead, how
     // much riverbed it is, negative: -127 under the water, fading to 0 up the bank.
-    const bed = 1 - smoothstep(RIVER_HALF + WET_FROM, RIVER_HALF + WET_TO, river);
+    const bed = river > RIVER_HALF + WET_TO ? 0 : 1 - smoothstep(RIVER_HALF + WET_FROM, RIVER_HALF + WET_TO, river + bankIn(wx, wz));
     v[o + 3] = (bed > 0 ? -Math.round(127 * bed) : Math.round(127 * grove(wx, wz, found[EDGE], river))) << 8;
     // The water's layer.
     const w = (z * CHUNK_VERTS + x) * 2;
@@ -1125,6 +1156,16 @@ function plantBamboo(slot, strip) {
         const slopeX = eb - ea + ed - ec, slopeZ = ec - ea + ed - eb, length = Math.sqrt(slopeX * slopeX + slopeZ * slopeZ);
         if (length > 0) {
           const out = LEAN_OUT * (1 - edge / LEAN_REACH) / length;
+          leanX -= slopeX * out; leanZ -= slopeZ * out;
+        }
+      }
+      // And out over a river's water, from up to LEAN_REACH m back from where the bamboo starts.
+      const wx = slot.x + x, wz = slot.z + z, river = riverDistance(wx, wz) - RIVER_HALF - GROVE_BANK;
+      if (river < LEAN_REACH) {
+        const slopeX = riverDistance(wx + 0.5, wz) - riverDistance(wx - 0.5, wz), slopeZ = riverDistance(wx, wz + 0.5) - riverDistance(wx, wz - 0.5);
+        const length = Math.sqrt(slopeX * slopeX + slopeZ * slopeZ);
+        if (length > 0) {
+          const out = LEAN_OUT * Math.min(1 - river / LEAN_REACH, 1) / length;
           leanX -= slopeX * out; leanZ -= slopeZ * out;
         }
       }
@@ -1540,6 +1581,26 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
     const river = riverDistance(x, z) - half;
     return river < RIVER_HALF || waterLevel(x, z) + RIVER_BANK * (river - RIVER_HALF) < roadLevel(x, z) + lift + BRIDGE_CLEAR;
   }
+  // The corners (x, y, z, ...) of a bridge's deck, raised in an arch (see ARCH), with more of them
+  // where they're further apart than ARCH_STEP.
+  function arch(corners) {
+    const flat = corners.splice(0);
+    let length = 0;
+    for (let i = 3; i < flat.length; i += 3) length += Math.hypot(flat[i] - flat[i - 3], flat[i + 2] - flat[i - 1]);
+    // sin²(πs/L) bends most, 2A(π/L)² per m, at its top: no more than 1 / ARCH_RADIUS.
+    const rise = Math.min(ARCH, length * length / (2 * Math.PI * Math.PI * ARCH_RADIUS));
+    let start = 0;
+    for (let i = 0; i < flat.length; i += 3) {
+      const last = i + 3 >= flat.length;
+      const dx = last ? 0 : flat[i + 3] - flat[i], dy = last ? 0 : flat[i + 4] - flat[i + 1], dz = last ? 0 : flat[i + 5] - flat[i + 2];
+      const piece = Math.hypot(dx, dz), steps = last ? 1 : Math.ceil(piece / ARCH_STEP);
+      for (let k = 0; k < steps; k++) {
+        const t = k / steps, s = Math.sin(Math.PI * (start + t * piece) / length);
+        corners.push(flat[i] + t * dx, flat[i + 1] + t * dy + rise * s * s, flat[i + 2] + t * dz);
+      }
+      start += piece;
+    }
+  }
   function findBridges(x, z) {
     if (Math.hypot(x - bridgeX, z - bridgeZ) < BRIDGE_REFRESH) return;
     bridgeX = x; bridgeZ = z;
@@ -1582,6 +1643,7 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
         corners.push(px, roadLevel(px, pz) + pieces[q + (atEnd ? 12 : 5)] + BRIDGE_LIFT, pz);
         x0b = Math.min(x0b, px); z0b = Math.min(z0b, pz); x1b = Math.max(x1b, px); z1b = Math.max(z1b, pz);
       }
+      arch(corners);
       // Into the road at each end (see BRIDGE_SINK): on from the end corner, away from the next.
       const sink = (k, from) => {
         const ex = corners[k] - corners[from], ez = corners[k + 2] - corners[from + 2], length = Math.hypot(ex, ez);

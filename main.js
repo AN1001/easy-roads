@@ -20,7 +20,8 @@ import { createHint, createJoystick, touchScreen } from './ui.js';
 //     autodrive=road follows the road instead, so new terrain keeps being built
 //   size: render at a fixed resolution instead of the window's
 //   spawn=x,z: start on the road nearest that point, for measuring the same place each time;
-//     spawn=x,z,back facing the other way along it
+//     spawn=x,z,back facing the other way along it; spawn=x,z,at,degrees exactly there (off the road
+//     too: to look along a river from its bank), facing that way (0: +z, 90: +x)
 //   aa / nocull: turn antialiasing back on / chunk culling off, to measure what they cost
 //   nonature: no ground cover (nature.js: grass, ferns, bushes, rocks), to measure what it costs
 //   step=60: each frame moves the game on 1/60 s, however long it took: the same drive frame by
@@ -35,11 +36,13 @@ const fixedStep = params.has('step') ? 1000 / (Number(params.get('step')) || 60)
 
 const canvas = document.querySelector('canvas');
 // No antialiasing (multisampling): measured to roughly halve the GPU cost per pixel,
-// including clearing the screen. Edges get PS2-style jaggies instead.
-const gl = canvas.getContext('webgl2', { antialias: params.has('aa') });
+// including clearing the screen. Edges get PS2-style jaggies instead. (`?aa`: the scene's own
+// framebuffer is multisampled: see `scene`.) The canvas needs no depth: everything's drawn into the
+// scene's framebuffer, and only its colour copied onto the canvas.
+const gl = canvas.getContext('webgl2', { antialias: false, depth: false });
 
 const profiler = params.has('profile')
-  ? createProfiler(gl, ['clear', 'car', 'stalks', 'terrain', 'leaves', 'clumps', 'particles', 'rain', 'sky', 'trees', 'nature'],
+  ? createProfiler(gl, ['clear', 'car', 'stalks', 'terrain', 'leaves', 'clumps', 'particles', 'rain', 'sky', 'trees', 'nature', 'water', 'present'],
     ['chunks drawn', 'rows built', 'particles', 'stalks near', 'stalks far', 'clumps', 'stalks bent'])
   : null;
 window.profiler = profiler;
@@ -105,6 +108,7 @@ const terrain = createTerrain({ draw: FOG_END, ahead: AHEAD, detail: DETAIL, wor
 const [spawnX, spawnZ, spawnBack] = params.get('spawn')?.split(',') ?? [600, -330];
 const spawn = { ...terrain.nearestRoad(Number(spawnX), Number(spawnZ)) };
 if (spawnBack === 'back') spawn.heading += Math.PI;
+if (spawnBack === 'at') Object.assign(spawn, { x: Number(spawnX), z: Number(spawnZ), heading: Number(params.get('spawn').split(',')[3] ?? 0) * Math.PI / 180 });
 const buildStart = performance.now();
 terrain.update(spawn.x, spawn.z, Infinity);
 console.log(`terrain: ${terrain.slots.filter(slot => slot.ready).length} chunks built in ${(performance.now() - buildStart).toFixed(1)} ms`);
@@ -637,6 +641,41 @@ const [stalkUniforms, leavesUniforms, clumpUniforms] = [stalkProgram, leavesProg
 });
 
 const uWaterChunk = gl.getUniformLocation(waterProgram, 'uChunk');
+
+// The frame is drawn into a framebuffer of our own (`scene`: colour and depth), not straight onto the
+// canvas, so the water can reflect it: just before the water's drawn, its colour and depth are copied
+// (`copy`: textures on units 9 and 10, which water.frag reads; a framebuffer can't be read while it's
+// drawn into); at the end, its colour is copied onto the canvas. Two copies of 576 × 360 a frame (the
+// first only with a river in view). Sized in resize(). (Straight onto the canvas until 3 Oct 2026.)
+const SAMPLES = params.has('aa') ? Math.min(4, gl.getParameter(gl.MAX_SAMPLES)) : 0;
+const scene = { framebuffer: gl.createFramebuffer(), color: gl.createRenderbuffer(), depth: gl.createRenderbuffer() };
+const copy = { framebuffer: gl.createFramebuffer(), color: gl.createTexture(), depth: gl.createTexture() };
+gl.useProgram(waterProgram);
+gl.uniform1i(gl.getUniformLocation(waterProgram, 'uSceneColor'), 9);
+gl.uniform1i(gl.getUniformLocation(waterProgram, 'uSceneDepth'), 10);
+function sizeScene(width, height) {
+  gl.bindRenderbuffer(gl.RENDERBUFFER, scene.color);
+  gl.renderbufferStorageMultisample(gl.RENDERBUFFER, SAMPLES, gl.RGBA8, width, height);
+  gl.bindRenderbuffer(gl.RENDERBUFFER, scene.depth);
+  gl.renderbufferStorageMultisample(gl.RENDERBUFFER, SAMPLES, gl.DEPTH_COMPONENT24, width, height);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, scene.framebuffer);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, scene.color);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, scene.depth);
+  for (const [unit, texture, format, type, attachment] of [[9, copy.color, gl.RGBA8, gl.RGBA, gl.COLOR_ATTACHMENT0],
+    [10, copy.depth, gl.DEPTH_COMPONENT24, gl.DEPTH_COMPONENT, gl.DEPTH_ATTACHMENT]]) {
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, format, width, height, 0, type, format === gl.RGBA8 ? gl.UNSIGNED_BYTE : gl.UNSIGNED_INT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, copy.framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, attachment, gl.TEXTURE_2D, texture, 0);
+  }
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, scene.framebuffer);
+}
 const uModels = gl.getUniformLocation(carProgram, 'uModels'), uFirstModel = gl.getUniformLocation(carProgram, 'uFirst');
 const uPointScale = gl.getUniformLocation(particleProgram, 'uPointScale');
 
@@ -777,6 +816,7 @@ function resize() {
     canvas.style.height = `${canvas.height * scale / devicePixelRatio}px`;
   }
   gl.viewport(0, 0, canvas.width, canvas.height);
+  sizeScene(canvas.width, canvas.height);
   perspective(proj, Math.PI / 4, canvas.width / canvas.height, 0.3, FOG_END);
   const pixelsPerMetre = canvas.height / 2 * proj[5];  // 1 m in front of the camera; proj[5]: 1 / tan(half the field of view)
   gl.useProgram(particleProgram);
@@ -1083,6 +1123,7 @@ function frame(realMs) {
   // buffer every frame anyway, so clearing only depth and drawing the sky last measured
   // slower (see NOTES.md).
   profiler?.begin(0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, scene.framebuffer);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   profiler?.end();
 
@@ -1239,10 +1280,15 @@ function frame(realMs) {
   // The rivers' water, over the land (and the bridges' piles) it's blended with; it hides nothing
   // behind it, so it doesn't write depth.
   let wet = 0;
+  profiler?.begin(11);
   for (let k = 0; k < terrain.drawCount; k++) {
     const i = terrain.drawList[k], chunk = terrain.slots[i];
     if (!chunk.wet || (cull && !chunkVisible(chunk))) continue;
     if (!wet++) {
+      // What it reflects: the scene so far, copied (see `scene`).
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, copy.framebuffer);
+      gl.blitFramebuffer(0, 0, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height, gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT, gl.NEAREST);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, scene.framebuffer);
       gl.useProgram(waterProgram);
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -1256,6 +1302,7 @@ function frame(realMs) {
     gl.disable(gl.BLEND);
     gl.depthMask(true);
   }
+  profiler?.end();
 
   // Dust, smoke and water, then the rain: the depth test has the pixels already drawn in front of
   // them, so only those that show get shaded. The first frame has none yet, but draws one anyway,
@@ -1284,6 +1331,12 @@ function frame(realMs) {
   gl.useProgram(skyProgram);
   profiler?.begin(8);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+  profiler?.end();
+
+  // Onto the canvas.
+  profiler?.begin(12);
+  gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+  gl.blitFramebuffer(0, 0, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
   profiler?.end();
 
   profiler?.frameEnd();
