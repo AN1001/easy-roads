@@ -207,6 +207,23 @@ The cube (`shaders/cube.*`) is no longer in the game, but `bench/frames.html` st
 
 ## Measurements
 
+### The shingle's edge smooth, bamboo down the banks in patches (4 Oct 2026)
+
+Asked for: the gravel didn't blend in, its blend pixellated though the textures aren't; and bamboo a
+little way down the banks, not too far.
+
+- **Why pixellated**: the ground textures are drawn unfiltered close up (MAG_FILTER NEAREST, the PS1
+  look), and the band's edge wandered by the litter texture enlarged 2.5×, so it stepped along 30 cm
+  texel squares (and by the stones' texels). Now terrain.frag pushes it in and out by value noise
+  (noise.glsl `noise3`, eased): ±0.25 m at 0.7 m and ±2 m at 3.5 m. Terrain GPU +0.01-0.03 ms by rivers.
+- **Bamboo** (terrain.js `grove`): in patches (noise at 35 m) along the grassy and reedy stretches (not
+  the stony ones' beaches), it grows from 0.3 m past the water's edge as it wanders (bankIn), thick by
+  2.5 m; elsewhere from 2 m past the river's widest, thick by 8 m, as before. Stalks within 4 m of the
+  water in a 450 × 2,800 m strip by a river: 116 → 399, 23 of them on the bank's slope. It leans out
+  over the water as before (plantBamboo). Stalks' GPU the same at three river views (0.17-0.21 ms).
+- **Checked**: nothing on the bridges' roads; every bridge both ways, never in the air; on the road
+  40 min, 0 jumps; chunks build in 0.73 ms (checksum `b1825defd82feebe`); screenshots.
+
 ### Shingle, a wet line, and stretches along the rivers (3 Oct 2026)
 
 Asked for: the banks' shape good, their detail still inadequate. From the photos of Japanese river

@@ -13,6 +13,7 @@ precision highp float;
 #include "sky.glsl"
 #include "dither.glsl"
 #include "ripple.glsl"
+#include "noise.glsl"
 
 in vec3 vWorldPos;
 in vec3 vNormal;
@@ -39,12 +40,14 @@ const vec3 BANK = vec3(0.22, 0.20, 0.15);     // steep ground: earth, stones and
 const vec3 CANOPY = vec3(0.10, 0.17, 0.09);   // far off: the tops of the bamboo
 const vec3 BED = vec3(0.17, 0.16, 0.14);      // a river's bed and wet banks: silt and stones, dark with the wet
 // The river's shore (vShore): rounded pale stones in a band along the water as wide as the stretch
-// has it (terrain.js shoreByte), its edge pushed in and out by up to SHORE_RAGGED / 2 m, and on into
-// the shallows, and by up to about 1.2 m more over a few metres (the litter texture's green varies ±0.4: × SHORE_WANDER), so a narrow band comes and
-// goes in patches rather than running on like a kerb; above the band no riverbed, so on a grassy or reedy stretch the grass comes down to
+// has it (terrain.js shoreByte), its edge pushed in and out by smooth noise, by up to SHORE_RAGGED m
+// at SHORE_RAGGED_WAVE m and SHORE_WANDER m at SHORE_WANDER_WAVE (so a narrow band comes and goes in
+// patches rather than running on like a kerb), and on into the shallows. (From noise, not a texture:
+// the textures aren't filtered close up, and one enlarged to wander by stepped the band's edge in
+// 30 cm squares.) above the band no riverbed, so on a grassy or reedy stretch the grass comes down to
 // it. Just above the water, the wet line: dark, mossy, glistening, up to WET_LINE m past it.
 const vec3 SHINGLE = vec3(0.36, 0.34, 0.31), MOSS = vec3(0.10, 0.15, 0.06);
-const float SHORE_RAGGED = 0.5, SHORE_WANDER = 3.0, WET_LINE = 0.45, SHORE_AWAY = 2.45;  // m
+const float SHORE_RAGGED = 0.25, SHORE_RAGGED_WAVE = 0.7, SHORE_WANDER = 2.0, SHORE_WANDER_WAVE = 3.5, WET_LINE = 0.45, SHORE_AWAY = 2.45;  // m
 const float CANOPY_FROM = 80.0, CANOPY_TO = 150.0;  // m from the camera: where clumps stand for the bamboo (bamboo.js)
 
 // Across the road's edge (m from it, as terrain.js frays it): sand to grass, then grass to the
@@ -166,11 +169,11 @@ void main() {
     shine = mix(shine, 0.12 * pow(1.0 - max(toCamera.y, 0.0), 3.0), riverbed);
   }
   if (shore) {
-    // The stones: the bank's texture laid flat at a third of its scale, its green pushing the
-    // band's edge in and out.
+    // The stones: the bank's texture laid flat at a third of its scale.
     vec3 stones = textureLod(uGround, vec3(ground * 3.0, BANK_LAYER), lod + 1.6).rgb;
-    float wander = textureLod(uGround, vec3(ground * 0.4, FLOOR_LAYER), lod - 1.3).g * 2.0 - 1.0;
-    float ragged = SHORE_RAGGED * (stones.g * 2.0 - 1.0) + SHORE_WANDER * wander;
+    vec2 at = vWorldPos.xz;
+    float ragged = SHORE_RAGGED * (2.0 * noise3(vec3(at / SHORE_RAGGED_WAVE, 7.0)) - 1.0)
+      + SHORE_WANDER * (2.0 * noise3(vec3(at / SHORE_WANDER_WAVE, 3.0)) - 1.0);
     float shingle = width > 0.0 ? (1.0 - smoothstep(width - 0.15, width + 0.15, past + ragged)) * smoothstep(-0.6, -0.35, past) : 0.0;
     base = mix(base, SHINGLE * 2.0 * stones * (0.8 + 0.4 * stones.r), shingle);
     float wet = 1.0 - smoothstep(0.05, WET_LINE, past + 0.3 * ragged);

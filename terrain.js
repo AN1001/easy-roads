@@ -970,9 +970,18 @@ function landHeight(x, z, road, lift, river) {
 const GROVE_WAVE = 90, CLUMP_WAVE = 20;  // m: groves and clearings, and clumps within them
 const GROVE_FROM = 1, GROVE_TO = 5;      // m from the road's edge: none nearer; as thick as it gets from here
 const GROVE_BANK = 2, GROVE_BANK_TO = 8;  // m from the water: none nearer; as thick as it gets from here
+// But in patches (noise at BANK_GROVE_WAVE m) along the grassy and reedy stretches (shoreByte's; not
+// on the stony ones' beaches), down the bank to BANK_GROVE m from the water's edge as it wanders
+// (bankIn), thick by BANK_GROVE_TO (4 Oct 2026: asked for, bamboo a little way down the banks).
+const BANK_GROVE = 0.3, BANK_GROVE_TO = 2.5, BANK_GROVE_WAVE = 35;  // m
 function grove(x, z, road, river = riverDistance(x, z)) {
   if (road < GROVE_FROM) return 0;
-  const bank = smoothstep(RIVER_HALF + GROVE_BANK, RIVER_HALF + GROVE_BANK_TO, river);
+  let bank = smoothstep(RIVER_HALF + GROVE_BANK, RIVER_HALF + GROVE_BANK_TO, river);
+  if (bank < 1) {
+    const patch = smoothstep(0, 0.35, noise(x / BANK_GROVE_WAVE, z / BANK_GROVE_WAVE, 195))
+      * (1 - smoothstep(0.1, 0.2, noise(x / STRETCH_WAVE, z / STRETCH_WAVE, 194)));
+    if (patch > 0) bank += (Math.max(smoothstep(BANK_GROVE, BANK_GROVE_TO, river + bankIn(x, z) - RIVER_HALF), bank) - bank) * patch;
+  }
   if (bank === 0) return 0;
   const n = 0.7 * noise(x / GROVE_WAVE, z / GROVE_WAVE, 110) + 0.3 * noise(x / CLUMP_WAVE, z / CLUMP_WAVE, 111);
   return smoothstep(-0.35, 0.2, n) * smoothstep(GROVE_FROM, GROVE_TO, road) * bank;  // ~1/5 clearings, ~2/5 thick
