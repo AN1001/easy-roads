@@ -1,6 +1,6 @@
 // Textures made at startup, as the layers of one texture array: for the ground, earth banks, the
 // forest floor, grass and the road's sand; for the bamboo, its culms, its leaves and its clumps far
-// off; the clouds; and timber, for the bridges. And the road's puddles, in a texture of their own (createPuddles).
+// off; the clouds; timber, for the bridges; and the cedars' bark, crowns and far clumps. And the road's puddles, in a texture of their own (createPuddles).
 // The ground's are square tiles that repeat seamlessly, 16 m across at 8 texels per metre: chunky,
 // and still at least a pixel per texel on the road beside the car at 360 rows. The shaders multiply
 // their own colours by them, so a texel is a brightness, with a tint, around 1, stored halved (128
@@ -8,13 +8,15 @@
 // texture to its average, things keep about their colours (tinted a little by the tints: the moss
 // makes the bank and the floor a little greener).
 // Alpha: the grass's tufts, which fray the road's edge; where the leaves are; how thick the clouds
-// are; where the far clumps' stalks and leaves are; where the far stalks' leaves are.
+// are; where the far clumps' stalks and leaves are; where the far stalks' leaves are; likewise the
+// cedars' needles, near, far, and in their far clumps.
 
 export const TEXTURE_SIZE = 128;    // texels along each side
 export const TEXELS_PER_METRE = 8;  // the ground's: must match terrain.frag
-export const TEXTURE_LAYERS = 15;   // in this order (the shaders' *_LAYER constants):
+export const TEXTURE_LAYERS = 19;   // in this order (the shaders' *_LAYER constants):
 export const BANK = 0, FLOOR = 1, GRASS = 2, SAND = 3, CULM = 4, LEAVES = 5, CLOUDS = 6, CLUMPS = 7, FAR_LEAVES = 8,
-  WOOD = 9, BARK = 10, BLOSSOM = 11, PETALS = 12, LEAF = 13, FLOWERING = 14;
+  WOOD = 9, BARK = 10, BLOSSOM = 11, PETALS = 12, LEAF = 13, FLOWERING = 14,
+  CEDAR_BARK = 15, CEDAR = 16, FAR_CEDAR = 17, CEDAR_CLUMPS = 18;
 
 const N = TEXTURE_SIZE;
 
@@ -22,7 +24,8 @@ const N = TEXTURE_SIZE;
 export function createTextures() {
   const pixels = new Uint8Array(N * N * 4 * TEXTURE_LAYERS);
   const layer = new Float32Array(N * N * 4);  // r, g, b brightness around 1, and alpha
-  [bank, floor, grass, sand, culm, leaves, clouds, clumps, farLeaves, wood, bark, blossom, petals, leaf, flowering].forEach((make, k) => {
+  [bank, floor, grass, sand, culm, leaves, clouds, clumps, farLeaves, wood, bark, blossom, petals, leaf, flowering,
+    cedarBark, cedar, farCedar, cedarClumps].forEach((make, k) => {
     layer.fill(1);
     make(layer);
     pack(layer, pixels, k);
@@ -564,6 +567,89 @@ function flowering(layer) {
         const heart = d < 0.3, shade = 2.0 + 0.3 * random(k, 4, 261);
         layer[o] = shade; layer[o + 1] = shade * (heart ? 0.9 : 1); layer[o + 2] = shade * (heart ? 0.55 : 0.97);
       }
+    }
+  }
+}
+
+// --- The cedars (terrain.js plants them in their plantations; bamboo.js and its shaders draw them as
+// they do the bamboo) ---
+
+// Bark: red-brown, in long fibrous strips up the trunk, each its own shade, wandering a little as
+// it goes, with dark cracks between them. u round the trunk, v up it, at CULM_TEXELS_PER_METRE as
+// the culm's (stalk.vert).
+function cedarBark(layer) {
+  for (let v = 0; v < N; v++) {
+    for (let u = 0; u < N; u++) {
+      let value = 1 + 0.22 * smooth(u, v, 2, 32, 271) + 0.1 * smooth(u, v, 1, 8, 272) + 0.08 * (random(u, v, 273) - 0.5);
+      if (Math.abs(smooth(u, v, 4, 128, 274)) < 0.1) value -= 0.4;  // a crack between strips
+      set(layer, u, v, value * 1.12, value * 0.95, value * 0.85);
+    }
+  }
+}
+
+// A cedar's crown, side on, up column `u0` from row `from` to `to`, `reach` texels each side at its
+// foot, plotted with `plot`: tier on tier of branches, both ways from the trunk, each drooping a
+// little as it goes out and shorter the higher it is, so it's a narrow cone; along each, tufts of
+// needles, lighter on top and darker beneath, which give the cone its ragged edge. `seed`: 0 for the
+// crown's card; others for other trees.
+function cedarCrown(plot, u0, from, to, reach, seed) {
+  const height = to - from;
+  let k = 0;
+  for (let v0 = from + 1; v0 < to - 1; v0 += height / 60 + height / 60 * random(k, 0, 281 + seed), k++) {
+    const up = (v0 - from) / height;
+    for (const side of [-1, 1]) {
+      const length = reach * (1 - up) ** 0.9 * (0.7 + 0.4 * random(k, side, 282 + seed)) + 1;
+      const droop = (0.15 + 0.3 * random(k, side, 283 + seed)) / Math.max(length, 1);
+      const tuft = 1.2 + (0.6 + 1.2 * (1 - up)) * random(k, side, 284 + seed);
+      for (let t = 0; t <= length; t += 1.2) {
+        const tu = u0 + side * t, tv = v0 - droop * t * t;
+        for (let dv = -Math.ceil(tuft); dv <= tuft; dv++) {
+          for (let du = -Math.ceil(tuft); du <= tuft; du++) {
+            if (du * du + dv * dv > tuft * tuft) continue;
+            const shade = (0.8 + 0.35 * random(Math.round(tu + du), Math.round(tv + dv), 285 + seed)) * (dv > 0 ? 1.15 : dv < 0 ? 0.8 : 1);
+            plot(tu + du, tv + dv, shade, shade, shade * 0.95);
+          }
+        }
+      }
+    }
+  }
+}
+
+// A card of a cedar's crown (bamboo.js), side on: u across (the trunk up the middle), v up, from where
+// its branches start to just over its top. Alpha as the bamboo's leaves'.
+function cedar(layer) {
+  for (let o = 3; o < layer.length; o += 4) layer[o] = 0;
+  cedarCrown(plotter(layer, 1, N - 2), N / 2, 0, N - 1, N / 2 - 4, 0);
+}
+
+// The card a far cedar's crown is drawn on, facing the camera: what the near one's 3 cards, crossed
+// at 60°, look like from the side, as farLeaves is the bamboo's.
+function farCedar(layer) {
+  for (let o = 3; o < layer.length; o += 4) layer[o] = 0;
+  crossed(plotter(layer, 1, N - 2), N / 2, plot => cedarCrown(plot, N / 2, 0, N - 1, N / 2 - 4, 0));
+}
+
+// Two pictures of a stand of cedars far off (bamboo.js), side by side, as the bamboo's clumps (clumps):
+// u across the 6 m square it stands for, v up from its foot to the top of its tallest tree. In each,
+// CEDARS trees, 75-97% of the height: a bare trunk 2 texels across, darker lower down, up to its
+// crown from 45% of the way up, as narrow as a near one's (CEDAR_REACH of its height each side, at a
+// typical stand's 23 m: the card is ~4.7 times as tall as it's wide, the texture square). The colours
+// are shades of the crowns' (clump.vert): the trunks redder.
+const CEDARS = 3, CEDAR_REACH = 0.075;
+const CEDAR_TRUNK = [1.6, 0.65, 0.65];
+function cedarClumps(layer) {
+  for (let o = 3; o < layer.length; o += 4) layer[o] = 0;
+  const across = 23 / 6;  // the card's height over its width, at 23 m
+  for (let picture = 0; picture < 2; picture++) {
+    const left = picture * N / 2, plot = plotter(layer, left + 1, left + N / 2 - 2);
+    for (let k = 0; k < CEDARS; k++) {
+      const u0 = left + 10 + (N / 2 - 20) * (k + random(k, picture, 291)) / CEDARS;
+      const top = N * (k === 1 ? 0.97 : 0.75 + 0.2 * random(k, picture, 292));
+      for (let v = 0; v < 0.5 * top; v++) {
+        const shade = 0.5 + 0.5 * v / (0.5 * top);
+        for (let w = 0; w < 2; w++) plot(u0 + w, v, CEDAR_TRUNK[0] * shade, CEDAR_TRUNK[1] * shade, CEDAR_TRUNK[2] * shade);
+      }
+      cedarCrown(plot, u0 + 0.5, 0.45 * top, top, CEDAR_REACH * top * across * 0.5, 10 * (picture * CEDARS + k + 1));
     }
   }
 }

@@ -7,6 +7,9 @@
 // stalk (or clump) it is: its first texel in uStalks (or its chunk's row of uClumps and its number
 // there); whether the car's bent it (BENT: then how far is at the same entry of uBends); and how much
 // of it is there.
+//
+// The cedar plantations' trees come as stalks too (terrain.js): a strip of CEDAR_STRIP or more
+// (isCedar). They stand firm: no camera pushing them aside, and the wind sways only their tops a little.
 
 const int LIST_WIDTH = 1024, STALK_WIDTH = 1600;  // must match bamboo.js
 const uint BENT = 1048576u;         // bamboo.js's
@@ -58,6 +61,13 @@ int loadStalk() {
   return k;
 }
 
+const float CEDAR_STRIP = 32.0;  // terrain.js's
+
+// Whether the stalk loaded is a cedar.
+bool isCedar() {
+  return look.y >= CEDAR_STRIP;
+}
+
 const float BURIED = 0.3;      // m of each stalk below the ground: coarser land may be drawn a little lower
 
 // The camera, following the car through a grove, bends stalks aside too: those within CAMERA_REACH
@@ -67,7 +77,7 @@ const float CAMERA_REACH = 1.2;  // m
 // A gentle breeze: gusts sweep across the groves along WIND, bending the stalks over and letting
 // them go, and each stalk rocks a little on its own. SWAY: m at the tip of a stalk, at most.
 const vec2 WIND = vec2(0.94, -0.34);
-const float SWAY = 0.35;
+const float SWAY = 0.35, CEDAR_SWAY = 0.2;
 const float GUST_WAVE = 30.0, GUST_SPEED = 5.0;  // m apart, m/s
 
 // How hard the gust is blowing at `xz`, 0 to 1.
@@ -85,7 +95,7 @@ float stalkRandom() {
 vec2 stalkTilt() {
   vec2 lean = look.zw + bend, away = stalk.xz - uCamera.xz;
   float gap = length(away), push = CAMERA_REACH - gap, up = uCamera.y - stalk.y;
-  if (push > 0.0 && up > 0.0 && up < stalk.w) lean += (gap > 1e-3 ? away / gap : vec2(1.0, 0.0)) * push / max(up, 1.0);
+  if (push > 0.0 && up > 0.0 && up < stalk.w && !isCedar()) lean += (gap > 1e-3 ? away / gap : vec2(1.0, 0.0)) * push / max(up, 1.0);
   float amount = length(lean);
   return amount > 0.95 ? lean * (0.95 / amount) : lean;
 }
@@ -95,6 +105,6 @@ vec3 stalkAxis(float h, vec2 tilt) {
   float height = stalk.w, up = sqrt(1.0 - dot(tilt, tilt)), phase = 6.2832 * stalkRandom();
   float rock = sin(1.7 * uTime.x + phase), across = sin(1.3 * uTime.x + 1.7 * phase);
   float f = max(h, 0.0) / height;
-  vec2 sway = SWAY * f * f * (WIND * (0.6 * gust(stalk.xz) + 0.25 * rock) + vec2(-WIND.y, WIND.x) * 0.15 * across);
+  vec2 sway = (isCedar() ? CEDAR_SWAY : SWAY) * f * f * (WIND * (0.6 * gust(stalk.xz) + 0.25 * rock) + vec2(-WIND.y, WIND.x) * 0.15 * across);
   return vec3(stalk.x + tilt.x * h + sway.x, stalk.y + up * h, stalk.z + tilt.y * h + sway.y);
 }

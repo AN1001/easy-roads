@@ -875,8 +875,8 @@ function drawList(uniforms, model, from, to) {
   }
 }
 
-// What the car's body bumps against: the bridges' railings, the trees' trunks and the boulders,
-// the deepest. Only the trees and boulders within WALL_REACH m of the car, found once a frame
+// What the car's body bumps against: the bridges' railings, the trees' trunks (the cedars' too) and
+// the boulders, the deepest. Only the trees and boulders within WALL_REACH m of the car, found once a frame
 // (nearTrees, nearBoulders): the car's points are at most ~2.5 m from it, a trunk or boulder at most
 // 1.3 m round, and in a frame (0.1 s at most) the car goes no more than ~3.5 m. (Every tree found,
 // for every point of the car, at every physics step, until 3 Oct 2026: ~0.05 ms a frame in Node.)
@@ -887,6 +887,8 @@ const wallAt = (x, y, z, normal) => {
   let deepest = bridgeWall(terrain.bridges, x, y, z, normal);
   const tree = treeWall(nearTrees, x, y, z, treeNormal, nearTreeCount);
   if (tree > deepest) { deepest = tree; normal[0] = treeNormal[0]; normal[1] = treeNormal[1]; normal[2] = treeNormal[2]; }
+  const cedar = bamboo.cedarWall(x, y, z, treeNormal);
+  if (cedar > deepest) { deepest = cedar; normal[0] = treeNormal[0]; normal[1] = treeNormal[1]; normal[2] = treeNormal[2]; }
   const rock = rockWall(nearBoulders, x, y, z, treeNormal);
   if (rock > deepest) { deepest = rock; normal[0] = treeNormal[0]; normal[1] = treeNormal[1]; normal[2] = treeNormal[2]; }
   return deepest;
@@ -929,6 +931,7 @@ function frame(realMs) {
   const handbrake = held.has('Space') ? 1 : 0;
   if (nearTrees.length < terrain.trees.length) nearTrees.length = terrain.trees.length;
   nearTreeCount = treesNear(terrain.trees, car.x, car.z, WALL_REACH, nearTrees);
+  bamboo.cedarsNear(car.x, car.z, WALL_REACH);
   for (let k = 0; k < boulders.length; k++) {
     const b = boulders[k], near = nearBoulders[k];
     if (near.list.length < b.count) near.list = new Float32Array(b.count);
