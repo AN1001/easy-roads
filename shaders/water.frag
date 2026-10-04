@@ -14,6 +14,7 @@ precision highp float;
 #include "sky.glsl"
 #include "ripple.glsl"
 #include "noise.glsl"
+#include "dither.glsl"
 
 in vec3 vWorldPos;
 in float vDepth;     // m: how deep it is here (negative: under the bank)
@@ -24,6 +25,7 @@ out vec4 color;
 // The scene as drawn before the water, its colour and depth (main.js copies them just before):
 // what the water reflects.
 uniform sampler2D uSceneColor;
+#define uSceneSize vec2(textureSize(uSceneColor, 0))
 uniform highp sampler2D uSceneDepth;
 const float NEAR = 0.3, FAR = 400.0;  // m: the camera's (main.js: perspective)
 
@@ -31,6 +33,8 @@ const vec3 MURK = vec3(0.05, 0.075, 0.06);  // the water's own colour, deep, bef
 const float CLEAR = 1.6;     // m deep: from here on, the bed hardly shows through
 const float SHALLOW_OPAQUE = 0.35, DEEP_OPAQUE = 0.95;  // how much the water hides of the bed
 const float FLOW = 0.35;     // m/s: how fast the small waves drift
+const float WAVE_RATE = 10.0, TILT_STEP = 0.01;  // their frames a second; the steps they tilt the surface in
+const float REFLECT_MURK = 0.3;  // how much the reflection takes the water's own colour (and loses its brightness)
 
 uint hash(ivec2 cell, uint seed) {
   uint h = uint(cell.x) * 1597334677u ^ uint(cell.y) * 3812015801u ^ seed * 2654435769u;
@@ -187,6 +191,10 @@ float sceneDepth(vec2 uv) {
 // steps on. The colour found, and how sure (a): 0 if it leaves the screen or finds nothing (then
 // it's the sky), fading out towards the screen's edges. (Where a point along the ray is on the
 // screen is linear in how far along: `start` + `step` × t, before dividing by w.)
+// Drawn as a PS1 would have (4 Oct 2026: as found, too true to life for the rest): a small picture,
+// REFLECT_ROWS rows of blocks down the screen (each found where its middle is: `uv` snapped), so it
+// reads coarse, as an enlarged low-resolution texture would.
+const float REFLECT_ROWS = 45.0;
 const int REFLECT_STEPS = 10, REFLECT_NARROW = 3;
 const float REFLECT_FIRST = 0.6, REFLECT_GROW = 1.6, REFLECT_THICK = 0.6;
 vec4 reflected(vec3 from, vec3 ray) {
@@ -207,7 +215,8 @@ vec4 reflected(vec3 from, vec3 ray) {
       uv = clip.xy / clip.w * 0.5 + 0.5;
       if (clip.w - sceneDepth(uv) < REFLECT_THICK + 0.02 * clip.w + (far - near)) {
         vec2 edge = min(uv, 1.0 - uv);
-        return vec4(texture(uSceneColor, uv).rgb, smoothstep(0.0, 0.06, min(edge.x, edge.y)));
+        vec2 blocks = vec2(REFLECT_ROWS * uSceneSize.x / uSceneSize.y, REFLECT_ROWS);
+        return vec4(texture(uSceneColor, (floor(uv * blocks) + 0.5) / blocks).rgb, smoothstep(0.0, 0.06, min(edge.x, edge.y)));
       }
     }
     before = t;
@@ -223,12 +232,15 @@ void main() {
   toCamera /= range;
 
   // Small waves: a few sines drifting downstream (any way: it's too gentle to tell), tilting the
-  // surface a little, and so its reflection; the rain's rings tilt it more.
+  // surface a little, and so its reflection; the rain's rings tilt it more. PS1-like, they move
+  // WAVE_RATE times a second, not smoothly, and tilt it in steps of TILT_STEP, so the reflection
+  // jumps a block at a time rather than sliding.
   vec2 p = vWorldPos.xz;
-  float t = uTime.x * FLOW;
+  float t = floor(uTime.x * WAVE_RATE) / WAVE_RATE * FLOW;
   vec2 tilt = 0.025 * vec2(sin(p.x * 1.3 + p.y * 0.4 + t * 3.1) + 0.6 * sin(p.x * 0.5 - p.y * 2.1 - t * 2.3),
                            sin(p.y * 1.1 - p.x * 0.7 + t * 2.7) + 0.6 * sin(p.y * 2.3 + p.x * 0.9 + t * 1.9));
   float rings = uWeather.x * ripple(p);
+  tilt = floor(tilt / TILT_STEP + 0.5) * TILT_STEP;
   vec3 normal = normalize(vec3(tilt.x, 1.0, tilt.y));
 
   // Reflection: half of it looking straight down (still, dark water: much more than Fresnel's 2%,
@@ -243,6 +255,7 @@ void main() {
   vec4 thing = floating(p, range, vDepth);
   vec4 seen = vMist.a < 0.9 && thing.a < 1.0 ? reflected(vWorldPos, ray) : vec4(0.0);
   vec3 mirror = mix(mix(skyColor(ray), vMist.rgb, vMist.a), seen.rgb, seen.a);
+  mirror = mix(mirror, mirror * 0.7 + MURK, REFLECT_MURK);
   vec3 lit = MURK * (vDaylight + LAMP_COLOR * headlight(vWorldPos, normal));
   vec3 surface = mix(mix(lit, vMist.rgb, vMist.a), mirror, shine);
 
@@ -259,5 +272,5 @@ void main() {
     opaque = mix(opaque, 1.0, thing.a);
   }
   opaque *= smoothstep(-0.3, 0.05, vDepth);
-  color = vec4(surface, opaque);
+  color = vec4(dither(surface), opaque);  // (PS1 colour, as everything else is)
 }

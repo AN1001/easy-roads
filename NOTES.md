@@ -207,6 +207,17 @@ The cube (`shaders/cube.*`) is no longer in the game, but `bench/frames.html` st
 
 ## Measurements
 
+### PS1-style reflections (4 Oct 2026)
+
+Asked for: the reflections great but too true to life for the rest. A PS1 had no reflections to
+speak of: a small low-resolution picture, flipped or mapped onto the water, in 15-bit colour,
+wobbling in steps. So (water.frag): what's reflected is looked up at the middle of its block, 45
+rows of blocks down the screen (at 90, 2 pixels of the 288 × 180 canvas at 576 × 360: hardly to be
+seen); the small waves move 10 times a second, not smoothly, and tilt the surface in steps of 0.01,
+so the reflection jumps a block at a time; it takes 30% of the water's own murk; and the water is
+dithered to 5 bits a channel, as everything else already was (it alone wasn't). GPU the same (water
+0.33 → 0.34 ms at a bank, `?profile&step=60`).
+
 ### The shingle's edge smooth, bamboo down the banks in patches (4 Oct 2026)
 
 Asked for: the gravel didn't blend in, its blend pixellated though the textures aren't; and bamboo a
