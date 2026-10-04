@@ -3,6 +3,7 @@
 // and never thinner than about a pixel (thinner, it would flicker in and out between pixels); or
 // far off, its line. Further still, clumps (clump.vert) take over from it. Lit and misted here, at
 // its corners, as the PS1 lit things: per pixel, the stalks' pass measured twice the cost.
+// Or a cedar's trunk (bamboo.glsl's isCedar): thicker, tapering more, in red-brown bark, duller.
 
 #include "frame.glsl"
 #include "bamboo.glsl"
@@ -16,6 +17,11 @@ out vec2 vUV;
 // Its colour is the texture's × vScale + vAdd: the tint and the light, and what the wet sheen and
 // the mist put over them, worked out at the corners, across which they barely change.
 out vec3 vScale, vAdd;
+flat out float vLayer;  // of the texture array: the culm's, or the cedar's bark
+// A cedar's trunk can't lean out of the lens's way as a stalk does (bamboo.glsl): within CLEAR_OF_LENS
+// m of the camera, it isn't drawn at all, rather than filling the screen. (Not dissolved by the dither
+// pattern: a discard anywhere in this shader can cost every stalk the GPU's early depth test.)
+const float CLEAR_OF_LENS = 2.5;  // m
 
 // The culm texture's strips (textures.js).
 const float CULM_STRIP = 4.0, CULM_TEXELS_PER_METRE = 32.0, TEXTURE_SIZE = 128.0;
@@ -23,10 +29,13 @@ const float TAPER = 0.45;        // thinner by this much at the tip
 const float MIN_PIXELS = 0.9;    // across, at least
 // Young culms are green; older ones yellower and duller.
 const vec3 YOUNG = vec3(0.26, 0.38, 0.13), OLD = vec3(0.40, 0.40, 0.20);
+const vec3 CEDAR_BARK = vec3(0.25, 0.16, 0.11);
+const float CEDAR_TAPER = 0.6;
+const float CULM_LAYER = 4.0, CEDAR_BARK_LAYER = 15.0;
 
 void main() {
   int k = loadStalk();
-  bool line = uStride == LINE_VERTICES;
+  bool line = uStride == LINE_VERTICES, cedar = isCedar();
   // How far up (0: its buried foot, 1: its tip), and round (0 to 1).
   float up = line ? float(k) : float(k / RING) / float(SEGMENTS);
   float around = line ? 0.5 : float(k % RING) / float(SIDES);
@@ -35,17 +44,21 @@ void main() {
   float dist = distance(axis, uCamera.xyz);
   // Out from the middle: round the tube; for the line, none, and its side is the one facing the camera.
   vec2 out2 = line ? vec2(0.0) : vec2(cos(6.2832 * around), sin(6.2832 * around));
-  float radius = max(look.x * (1.0 - TAPER * up), 0.5 * MIN_PIXELS * uTime.y * dist);
+  float radius = max(look.x * (1.0 - (cedar ? CEDAR_TAPER : TAPER) * up), 0.5 * MIN_PIXELS * uTime.y * dist);
   vec3 pos = axis + vec3(out2.x, 0.0, out2.y) * radius;
   vec2 facing = line ? normalize(uCamera.xz - axis.xz) : out2;
   vec3 normal = vec3(facing.x, 0.0, facing.y);
-  vUV = vec2((look.y + around) * CULM_STRIP, h * CULM_TEXELS_PER_METRE) / TEXTURE_SIZE;
+  // The bark: once round the trunk, all the texture's width (so it meets itself, finer round than
+  // up), from where its strip says.
+  float roundU = cedar ? (look.y - CEDAR_STRIP) * CULM_STRIP + around * TEXTURE_SIZE : (look.y + around) * CULM_STRIP;
+  vUV = vec2(roundU, h * CULM_TEXELS_PER_METRE) / TEXTURE_SIZE;
+  vLayer = cedar ? CEDAR_BARK_LAYER : CULM_LAYER;
   float age = stalkRandom();
-  vec3 tint = mix(YOUNG, OLD, age * age);
+  vec3 tint = cedar ? CEDAR_BARK * (0.85 + 0.3 * age) : mix(YOUNG, OLD, age * age);
   // Lit by the daylight and the headlight; glossy, and more so wet, so seen at a glancing angle its
   // edges shine with the sky.
   vec3 toCamera = normalize(uCamera.xyz - pos);
-  float sheen = (0.15 + 0.2 * uWeather.x) * pow(1.0 - max(dot(normal, toCamera), 0.0), 3.0), misted = mist(pos);
+  float sheen = (cedar ? 0.4 : 1.0) * (0.15 + 0.2 * uWeather.x) * pow(1.0 - max(dot(normal, toCamera), 0.0), 3.0), misted = mist(pos);
   vec3 light = daylight(normal) + LAMP_COLOR * headlight(pos, normal);
   vScale = tint * 2.0 * light * (1.0 - sheen) * (1.0 - misted);
   vAdd = skyColor(reflect(-toCamera, normal)) * sheen * (1.0 - misted) + mistColor(pos) * misted;
@@ -55,5 +68,5 @@ void main() {
   // Where a stalk is both, swapping from its line to its tube, the line counts the other way, so it's
   // one or the other.
   float random = fract(13.0 * stalkRandom());
-  if ((line ? 1.0 - random : random) >= shown) gl_Position = vec4(2.0, 0.0, 0.0, 1.0);
+  if ((line ? 1.0 - random : random) >= shown || cedar && distance(stalk.xz, uCamera.xz) < CLEAR_OF_LENS) gl_Position = vec4(2.0, 0.0, 0.0, 1.0);
 }

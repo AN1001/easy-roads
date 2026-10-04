@@ -207,6 +207,40 @@ The cube (`shaders/cube.*`) is no longer in the game, but `bench/frames.html` st
 
 ## Measurements
 
+### Cedar plantations (4 Oct 2026)
+
+Asked for: something to break up the bamboo away from the rivers; picked from a list (cedar first,
+then changing rain, then paddies). Parcels of Japanese cedar (sugi), 240 m square with edges
+wavering by up to 30 m, one in 0.22 of them (22.7% of a 10 × 10 km square), in place of the bamboo:
+`cedar()` in terrain.js, and again in terrain.vert (the same integer hash, for the ground). In a
+parcel the grove is as thick as it gets from 4 m off the road (none within 3 m, none by the water),
+so no clearings; one tree near the middle of each 3 m square (7% missing), 18-28 m tall, 15-25 cm
+round, standing straight, with no bamboo at all. Edge to edge with the bamboo, as real plantations
+are.
+
+Drawn as stalks (bamboo.js and its shaders), told apart by a strip of 32 or more (CEDAR_STRIP):
+trunks as tubes in red-brown bark (a new layer: long strips, dark cracks), tapering more; crowns as
+the crossed cards, from 45% of the height, 7.5% of it each side, wearing a ragged cone of needle
+tufts (new layers for the near card and the far one, the three crossed seen side on); far off, the
+clumps as stands of three cedars (new layer; the clump's height stored negative). Tubes out to
+60-75 m, not 26-34: at 30 m a trunk is still ~5 pixels, and its pixel-wide line read as a snap. The
+car doesn't push them aside (bamboo.js skips them in `bend`), the camera doesn't either, and a trunk
+within 2.5 m of the camera isn't drawn; the car bumps into the trunks (`cedarsNear` once a frame,
+`cedarWall` as treeWall). The ground in a parcel: fallen needles, browner than the litter, no meadow,
+more shade (0.55 of the sky, not 0.4), and far off tinted as the cedars' tops, darker. Texture layers
+15 → 19.
+
+From the road the crowns are mostly above the camera: a plantation reads as rows of bare trunks
+(true to pruned sugi); the cones show at a parcel's edge and far off.
+
+Cost (`node bench/loop.mjs`, 1,500 frames following the road): JS a frame, mean 0.255 → 0.293 ms
+from the usual spawn, 0.292 → 0.309 from inside a parcel (`spawn=500,-900`). Vertices a frame
+(`count`, 600 frames): all told 156,605 → 155,583 (usual spawn) and 164,938 → 164,761 (parcel);
+from the parcel, stalks 16,103 → 17,882, leaves 29,454 → 31,068, clumps 4,754 → 5,243 (the longer
+near range for fewer trees). Building a chunk (`bench/build.mjs`): median 0.659 → 0.691 ms (`cedar()`
+at every vertex, for the grove). Not yet measured on the target GPU: `?profile` at a parcel, against
+a bamboo stretch.
+
 ### PS1-style reflections (4 Oct 2026)
 
 Asked for: the reflections great but too true to life for the rest. A PS1 had no reflections to

@@ -19,7 +19,7 @@ uniform mediump sampler2DArray uGround;  // texture unit 1 (textures.js)
 out vec4 color;
 
 const float CLEAR_OF_LENS = 2.0, SEEN_FROM = 5.0;  // m from the camera: none, then all of them
-const float FAR_LEAVES_LAYER = 8.0;                 // leaves.vert's
+const float FAR_LEAVES_LAYER = 8.0, FAR_CEDAR_LAYER = 17.0;  // leaves.vert's
 // The near cards' leaves, where the mipmaps blur them, × this. A stalk's 3 cards dissolve by the
 // same pattern, so where they cross, the one's leaves take the same pixels as the other's; the far
 // card's picture of them has each leaf where it is. So at 24-36 m, where the one gives way to the
@@ -35,7 +35,7 @@ void main() {
   // same way until 29 Sep 2026, both kept the same pixels: half way, a third of the leaves were
   // missing, and they flickered thin as the car came up.)
   float pattern = threshold(ivec2(gl_FragCoord.xy) + vShift), leaf = texel.a;
-  if (vLayer == FAR_LEAVES_LAYER) pattern = 1.0 - pattern;
+  if (vLayer == FAR_LEAVES_LAYER || vLayer == FAR_CEDAR_LAYER) pattern = 1.0 - pattern;
   else leaf = min(leaf * NEAR_LEAVES, 1.0);
   if (leaf * lens * vShown < pattern) discard;
   color = vec4(dither(texel.rgb * vScale + vAdd), 1.0);
