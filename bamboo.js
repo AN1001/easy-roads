@@ -18,9 +18,16 @@
 // grows): each one card, facing the camera, with a picture of a clump of stalks and leaves
 // (textures.js), 4 vertices for the ~10 stalks it stands for. The rest are drawn with indices, which this file makes: each model's
 // triangles, repeated for as many stalks as 16-bit vertex numbers reach (or MAX_BATCH).
+//
+// The cedar plantations' trees (terrain.js) are drawn as stalks too, with the same models: their
+// trunks as the tubes and lines, their crowns as the cards, and stands of them far off as the clumps;
+// the shaders tell them apart (bamboo.glsl). But the car can't push them aside: it bumps into their
+// trunks (cedarWall), as it does a cherry's. And a cedar's trunk, ~40 cm across, is still ~5 pixels
+// at 30 m, where a stalk's tube gives way to its pixel-wide line: so they keep their tubes and crossed
+// cards out to CEDAR_NEAR_FROM-CEDAR_NEAR_BY m (~2 pixels).
 
 import { boxInFrustum } from './math.js';
-import { CHUNK_QUADS, MAX_STALKS, STALK_FLOATS, CLUMP, CLUMP_FLOATS } from './terrain.js';
+import { CHUNK_QUADS, MAX_STALKS, STALK_FLOATS, CLUMP, CLUMP_FLOATS, CEDAR_STRIP } from './terrain.js';
 
 export const SIDES = 5, SEGMENTS = 2, CARD_ROWS = 2;  // must match stalk.vert and leaves.vert
 const RING = SIDES + 1;
@@ -89,6 +96,7 @@ export const STALK_WIDTH = 1600;
 // before that each stalk and each clump swapped at its own distance, at 60-80 m or, briefly, 40-55,
 // so a square could show both or nothing: trees came and went.)
 const NEAR_FROM = 26, NEAR_BY = 34, NEAR_FADE = 4;  // m: the near and far models dissolve into each other over NEAR_FADE
+const CEDAR_NEAR_FROM = 60, CEDAR_NEAR_BY = 75;     // m
 const PICTURES_FROM = 180, PICTURES_BY = 200;  // m
 const FADE = 20;                               // m
 const STALKS_TO = PICTURES_BY + FADE / 2, CLUMPS_FROM = PICTURES_FROM - FADE / 2;
@@ -101,7 +109,7 @@ const APPEAR = 0.6;  // s
 // its leaves); for a stalk, the most a stalk h m tall leans, sways or spreads its leaves, each way.
 // (A chunk's box was widened by 4 m until 29 Sep 2026, too little for the tallest: ~3 stalks in a
 // view whose tops reached in at its sides were left out.)
-const TALLEST = 15.5;  // m
+const TALLEST = 28.5;  // m: a cedar (the tallest bamboo, 15.5)
 const stalkReach = h => 0.5 + 0.5 * h;
 const LEAN = stalkReach(TALLEST);
 const CLUMP_REACH = 3.5;  // m: half a clump's width (clump.vert's WIDTH), and its sway
@@ -114,6 +122,11 @@ const CLUMP_REACH = 3.5;  // m: half a clump's width (clump.vert's WIDTH), and i
 const CAR_REACH = 1.5, CAR_HEIGHT = 1.4, CAR_ABOVE = 2.5;  // m
 const SPRING = 1.5, DAMPING = 0.85;
 const MAX_MOVING = 4096;  // stalks bent or springing back at once, at most
+
+// What stops the car (cedarWall): a cedar's trunk, up to WALL_HEIGHT m, at least WALL_RADIUS round
+// (as trees.js's, for the same reason: the car's wall points are up to 0.7 m apart).
+const WALL_HEIGHT = 2, WALL_RADIUS = 0.36;  // m
+const MAX_NEAR_CEDARS = 256;
 
 // A random number, 0 to 1, for a square of the ground.
 function squareRandom(x, z) {
@@ -162,6 +175,11 @@ export function createBamboo(terrain, far) {
   const shareSums = new Int32Array(slots.length), sharedIn = new Int32Array(slots.length).fill(-1);
   const drawnIn = new Int32Array(slots.length).fill(-2), shownAt = new Float64Array(slots.length);
   let frame = 0;
+  // Per slot that plants stalks: how many of them are cedars (replant).
+  const cedarsIn = new Int32Array(slots.length);
+  // The cedars near the car, found once a frame (cedarsNear): x, z and trunk radius each, and their foot's height.
+  const nearCedars = new Float64Array(4 * MAX_NEAR_CEDARS);
+  let nearCedarCount = 0;
 
   // Bend, and let spring back, the stalks round the car. `tail` and `lamp`: xyz of its tail lights
   // and headlight (the Frame block's); `dt`: s since the last frame.
@@ -192,6 +210,7 @@ export function createBamboo(terrain, far) {
         const stalks = slot.stalks, row = slot.index * MAX_STALKS;
         for (let i = 0; i < slot.stalkCount; i++) {
           const f = i * STALK_FLOATS, x = stalks[f], z = stalks[f + 2];
+          if (stalks[f + 5] >= CEDAR_STRIP) continue;  // it stands firm (cedarWall)
           if (x < minX || x > maxX || z < minZ || z > maxZ || Math.abs(stalks[f + 1] - tail[1]) >= CAR_ABOVE) continue;
           // Away from the nearest point of the car's line.
           const t = Math.min(Math.max(((x - ax) * ex + (z - az) * ez) / length2, 0), 1);
@@ -230,6 +249,45 @@ export function createBamboo(terrain, far) {
       swapAt[o + q] = PICTURES_FROM + (PICTURES_BY - PICTURES_FROM) * random;
     }
     drawnIn[row] = -2;
+    let cedars = 0;
+    for (let i = 0; i < slot.stalkCount; i++) if (slot.stalks[i * STALK_FLOATS + 5] >= CEDAR_STRIP) cedars++;
+    cedarsIn[row] = cedars;
+  }
+
+  // The cedars within `reach` m (along x and along z) of (x, z), kept for cedarWall: once a frame,
+  // round the car, as main.js does the trees.
+  function cedarsNear(x, z, reach) {
+    nearCedarCount = 0;
+    for (let cz = Math.floor((z - reach) / CHUNK_QUADS); cz <= Math.floor((z + reach) / CHUNK_QUADS); cz++) {
+      for (let cx = Math.floor((x - reach) / CHUNK_QUADS); cx <= Math.floor((x + reach) / CHUNK_QUADS); cx++) {
+        const slot = terrain.slotFor(cx, cz);
+        if (slot.cx !== cx || slot.cz !== cz || !slot.ready || !cedarsIn[slot.index]) continue;
+        const stalks = slot.stalks;
+        for (let i = 0; i < slot.stalkCount && nearCedarCount < MAX_NEAR_CEDARS; i++) {
+          const f = i * STALK_FLOATS;
+          if (stalks[f + 5] < CEDAR_STRIP || Math.abs(stalks[f] - x) > reach || Math.abs(stalks[f + 2] - z) > reach) continue;
+          const o = 4 * nearCedarCount++;
+          nearCedars[o] = stalks[f]; nearCedars[o + 1] = stalks[f + 2];
+          nearCedars[o + 2] = Math.max(WALL_RADIUS, stalks[f + 4]); nearCedars[o + 3] = stalks[f + 1];
+        }
+      }
+    }
+  }
+
+  // How far the point (x, y, z) is inside a cedar's trunk (of those cedarsNear found): 0 if it isn't;
+  // if it is, the way out of it (straight out from the trunk's middle) into `normal`. For the car's
+  // body (car.js), as trees.js's treeWall.
+  function cedarWall(x, y, z, normal) {
+    let best = 0;
+    for (let k = 0; k < nearCedarCount; k++) {
+      const o = 4 * k, dx = x - nearCedars[o], dz = z - nearCedars[o + 1], radius = nearCedars[o + 2], foot = nearCedars[o + 3];
+      if (Math.abs(dx) > radius || Math.abs(dz) > radius || y < foot - 1 || y > foot + WALL_HEIGHT) continue;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d >= radius || radius - d <= best) continue;
+      best = radius - d;
+      normal[0] = d > 1e-6 ? dx / d : 1; normal[1] = 0; normal[2] = d > 1e-6 ? dz / d : 0;
+    }
+    return best;
   }
 
   // Whether a chunk just drawn stands where only clumps were drawn: a level-1 chunk in place of its
@@ -344,7 +402,7 @@ export function createBamboo(terrain, far) {
       const mask = crossing(planes, 7, minX, minY, minZ, maxX, maxY, maxZ), o = squareBase[slot.index];
       if (NEAR_ROOM + farCount + slot.stalkCount > capacity) break;  // never, at ~9,000 stalks
       const stalks = slot.stalks, starts = slot.squareStarts, base = stalkBase[slot.index];
-      const nearTo = NEAR_BY + NEAR_FADE / 2, near = gap2 < nearTo * nearTo;
+      const nearTo = (cedarsIn[slot.index] ? CEDAR_NEAR_BY : NEAR_BY) + NEAR_FADE / 2, near = gap2 < nearTo * nearTo;
       const bendRow = slot.level === 0 && movingIn[slot.index] > 0 ? slot.index * MAX_STALKS : -1;  // any bent
       let n = NEAR_ROOM + farCount;
       for (let q = 0, row = 0, column = 0; q < across * across; q++, column = column === across - 1 ? (row++, 0) : column + 1) {
@@ -376,9 +434,9 @@ export function createBamboo(terrain, far) {
           const bend = moved ? bent(bendRow + i) : 0;
           let left = shown;
           if (nearHere && nearCount < NEAR_ROOM) {  // each stalk its own distance, from where it stands (the same, whichever level)
-            const x = stalks[i * STALK_FLOATS], z = stalks[i * STALK_FLOATS + 2];
+            const x = stalks[i * STALK_FLOATS], z = stalks[i * STALK_FLOATS + 2], tree = stalks[i * STALK_FLOATS + 5] >= CEDAR_STRIP;
             const dx = x - camX, dz = z - camZ, r = (x * 0.6180339887 + z * 0.4142135624) % 1;
-            const d = NEAR_FROM + (NEAR_BY - NEAR_FROM) * (r < 0 ? r + 1 : r);
+            const d = tree ? CEDAR_NEAR_FROM + (CEDAR_NEAR_BY - CEDAR_NEAR_FROM) * (r < 0 ? r + 1 : r) : NEAR_FROM + (NEAR_BY - NEAR_FROM) * (r < 0 ? r + 1 : r);
             const t = Math.min(Math.max((d - Math.sqrt(dx * dx + dz * dz)) / NEAR_FADE + 0.5, 0), 1);  // 1: all near
             const nearShown = Math.round(shown * t);
             if (nearShown) {
@@ -429,7 +487,7 @@ export function createBamboo(terrain, far) {
           if (dx * dx + dz * dz > far * far) continue;
         }
         const y = clumps[f + 1];
-        if (mask && boxOutside(clumpPlanes, mask, x, y, z, clumps[f + 3])) continue;
+        if (mask && boxOutside(clumpPlanes, mask, x, y, z, Math.abs(clumps[f + 3]))) continue;  // (a cedars' stand's, negative)
         list[n++] = shown << 24 | id | i;
       }
     }
@@ -437,7 +495,7 @@ export function createBamboo(terrain, far) {
   }
 
   return {
-    list, listBends, bend, replant, update, stalkBase, stalkRows: Math.ceil(texels / STALK_WIDTH),
+    list, listBends, bend, replant, update, cedarsNear, cedarWall, stalkBase, stalkRows: Math.ceil(texels / STALK_WIDTH),
     // The bent entries: how many near ones (from 0), and the first and last far one (-1: none).
     get nearBent() { return nearBent; }, get firstBent() { return firstBent; }, get lastBent() { return lastBent; },
     // Where in the list: the near stalks from 0, the far ones from farFrom, the clumps from clumpsFrom; and

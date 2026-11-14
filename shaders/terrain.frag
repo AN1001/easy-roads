@@ -22,6 +22,7 @@ in float vGrove;   // how thick the bamboo grows here, 0 to 1; or, negative, how
 in vec2 vShore;    // m past a river's water's edge (-0.6 under it, 2.5 away from it), and how wide its shingle (m)
 in vec3 vDaylight;     // the daylight on it, less under the groves (terrain.vert)
 in vec4 vMist;     // rgb: the mist's colour; a: how much of it
+in float vCedar;   // 1 in a cedar plantation (terrain.vert)
 uniform mediump sampler2DArray uGround;  // texture unit 1: bank, forest floor, grass, sand
 uniform mediump sampler2D uPuddles;      // texture unit 5: how wet the road is, and its puddles (textures.js)
 out vec4 color;
@@ -38,6 +39,8 @@ const vec3 MEADOW = vec3(0.20, 0.29, 0.11), MEADOW_DRY = vec3(0.27, 0.28, 0.13);
 const float MEADOW_TO = 0.4;  // vGrove: no meadow from here (the bamboo's this thick)
 const vec3 BANK = vec3(0.22, 0.20, 0.15);     // steep ground: earth, stones and moss
 const vec3 CANOPY = vec3(0.10, 0.17, 0.09);   // far off: the tops of the bamboo
+// In a cedar plantation: the floor, fallen needles, browner; no meadow; far off, the cedars' tops.
+const vec3 NEEDLES = vec3(0.24, 0.17, 0.11), CEDAR_CANOPY = vec3(0.07, 0.12, 0.08);
 const vec3 BED = vec3(0.17, 0.16, 0.14);      // a river's bed and wet banks: silt and stones, dark with the wet
 // The river's shore (vShore): rounded pale stones in a band along the water as wide as the stretch
 // has it (terrain.js shoreByte), its edge pushed in and out by smooth noise, by up to SHORE_RAGGED m
@@ -108,18 +111,18 @@ void main() {
       float along = smoothstep(0.25, 0.75, facingX) > pattern ? vWorldPos.z : vWorldPos.x;
       bank = BANK * 2.0 * textureLod(uGround, vec3(along / TILE, vWorldPos.y / TILE, BANK_LAYER), lod).rgb;
     }
-    if (flatness > 0.0) litter = FLOOR * 2.0 * textureLod(uGround, vec3(ground, FLOOR_LAYER), lod).rgb;
+    if (flatness > 0.0) litter = mix(FLOOR, NEEDLES, vCedar) * 2.0 * textureLod(uGround, vec3(ground, FLOOR_LAYER), lod).rgb;
     // In the clearings, level ground is meadow: the grass texture, in broad patches of greener and
     // drier (the litter's texture, much enlarged, for the patches), the litter showing through
     // where they're thinnest.
-    float meadow = flatness * (1.0 - smoothstep(0.05, MEADOW_TO, max(vGrove, 0.0)));
+    float meadow = flatness * (1.0 - smoothstep(0.05, MEADOW_TO, max(vGrove, 0.0))) * (1.0 - vCedar);
     if (meadow > 0.0) {
       float patches = textureLod(uGround, vec3(ground * 0.125, FLOOR_LAYER), lod - 3.0).g * 2.0;
       vec3 field = mix(MEADOW, MEADOW_DRY, smoothstep(0.8, 1.2, patches)) * 2.0 * textureLod(uGround, vec3(ground, GRASS_LAYER), lod).rgb;
       litter = mix(litter, field, meadow * smoothstep(0.65, 0.9, patches + 0.3));
     }
     base = mix(bank, litter, flatness);
-    base = mix(base, CANOPY, smoothstep(CANOPY_FROM, CANOPY_TO, range) * max(vGrove, 0.0));
+    base = mix(base, mix(CANOPY, CEDAR_CANOPY, vCedar), smoothstep(CANOPY_FROM, CANOPY_TO, range) * max(vGrove, 0.0));
   }
   if (grassy > 0.0 && sandy < 1.0) base = mix(base, GRASS * 2.0 * grass.rgb, grassy);
 

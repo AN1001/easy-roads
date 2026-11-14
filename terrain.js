@@ -975,6 +975,7 @@ const GROVE_BANK = 2, GROVE_BANK_TO = 8;  // m from the water: none nearer; as t
 // (bankIn), thick by BANK_GROVE_TO (4 Oct 2026: asked for, bamboo a little way down the banks).
 const BANK_GROVE = 0.3, BANK_GROVE_TO = 2.5, BANK_GROVE_WAVE = 35;  // m
 function grove(x, z, road, river = riverDistance(x, z)) {
+  if (cedar(x, z)) return smoothstep(CEDAR_FROM, CEDAR_TO, road) * smoothstep(RIVER_HALF + GROVE_BANK, RIVER_HALF + GROVE_BANK_TO, river);
   if (road < GROVE_FROM) return 0;
   let bank = smoothstep(RIVER_HALF + GROVE_BANK, RIVER_HALF + GROVE_BANK_TO, river);
   if (bank < 1) {
@@ -986,6 +987,28 @@ function grove(x, z, road, river = riverDistance(x, z)) {
   const n = 0.7 * noise(x / GROVE_WAVE, z / GROVE_WAVE, 110) + 0.3 * noise(x / CLUMP_WAVE, z / CLUMP_WAVE, 111);
   return smoothstep(-0.35, 0.2, n) * smoothstep(GROVE_FROM, GROVE_TO, road) * bank;  // ~1/5 clearings, ~2/5 thick
 }
+
+// --- Cedar plantations ---
+//
+// Here and there, in place of the bamboo, a plantation of Japanese cedar (sugi): parcels of land
+// CEDAR_CELL m square, their edges wavering by up to CEDAR_WARP m, one in CEDAR_ODDS of them,
+// planted in rows (see plantBamboo) and, as plantations are, edge to edge with the forest round them.
+// Within one, the grove is as thick as it gets (none within CEDAR_FROM m of a road, all of it from
+// CEDAR_TO; none by the rivers, as the bamboo's): no clearings, and no bamboo down the banks.
+// terrain.vert works the same parcels out again, for the ground under them (must match its CEDAR_*).
+const CEDAR_CELL = 240, CEDAR_ODDS = 0.22, CEDAR_WARP = 30, CEDAR_WARP_WAVE = 90;  // m, -, m, m
+const CEDAR_FROM = 3, CEDAR_TO = 4;  // m from the road's edge
+export function cedar(x, z) {
+  const wx = x + CEDAR_WARP * Math.sin(z / CEDAR_WARP_WAVE), wz = z + CEDAR_WARP * Math.sin(x / CEDAR_WARP_WAVE);
+  return hash(Math.floor(wx / CEDAR_CELL), Math.floor(wz / CEDAR_CELL), 170) < CEDAR_ODDS * 4294967296;
+}
+// The trees: one in each 3 m square of a grid (2 × 2 of the bamboo's squares), within CEDAR_JITTER m
+// of its middle, but for one in CEDAR_GAPS (gone, or never planted); 18-28 m tall, 15-25 cm round at the foot,
+// standing straight (a little either way). As stalks (the same STALK_FLOATS, drawn by bamboo.js and
+// its shaders), but wearing CEDAR_STRIP or more for their strip: bamboo.glsl's sign of a cedar.
+const CEDAR_JITTER = 0.4, CEDAR_GAPS = 0.07;  // m, -
+const CEDAR_TALL = 18, CEDAR_TALLER = 10, CEDAR_RADIUS = 0.15, CEDAR_THICKER = 0.1, CEDAR_LEAN = 0.02;  // m, m, m, m, rad
+export const CEDAR_STRIP = 32;
 
 // Stalks: in each PLANT × PLANT m square of the world, one or none, at a random point in it, more
 // likely the thicker the grove there. Each is 7-15 m tall and 7-16 cm across (the taller the
@@ -1201,7 +1224,7 @@ function addSkirts(slot) {
   slot.minY -= drop;
 }
 
-// The chunk's bamboo (see "Bamboo", above), in the squares of row `strip`: the road's edge at each
+// The chunk's bamboo (see "Bamboo", above), or cedars (see "Cedar plantations"), in the squares of row `strip`: the road's edge at each
 // stalk (`edges`) and the ground's height from its finished vertices (the height on the same
 // triangles as heightAt), the grove afresh.
 function plantBamboo(slot, strip) {
@@ -1212,16 +1235,32 @@ function plantBamboo(slot, strip) {
     slot.squareStarts[q] = count;
     for (let k = 0; k < perSquare * perSquare; k++) {
       const i = q % across * perSquare + k % perSquare, j = Math.floor(q / across) * perSquare + Math.floor(k / perSquare);
-      const where = hash(slot.cx * cells + i, slot.cz * cells + j, 150);
-      const x = (i + (where & 1023) / 1024) * PLANT, z = (j + (where >>> 10 & 1023) / 1024) * PLANT;
+      const si = slot.cx * cells + i, sj = slot.cz * cells + j, where = hash(si, sj, 150);
+      let x = (i + (where & 1023) / 1024) * PLANT, z = (j + (where >>> 10 & 1023) / 1024) * PLANT;
+      // In a plantation, a cedar near the corner the square shares with the next three, or nothing.
+      const planted = cedar(slot.x + x, slot.z + z);
+      if (planted) {
+        if (si & 1 || sj & 1) continue;
+        x = (i + 1) * PLANT + CEDAR_JITTER * ((where & 1023) / 1024 - 0.5); z = (j + 1) * PLANT + CEDAR_JITTER * ((where >>> 10 & 1023) / 1024 - 0.5);
+      }
       const gx = Math.min(Math.floor(x / s), CHUNK_QUADS - 1), gz = Math.min(Math.floor(z / s), CHUNK_QUADS - 1);
       const fx = x / s - gx, fz = z / s - gz, o = (gz * CHUNK_VERTS + gx) * S, p = gz * CHUNK_VERTS + gx;
       const ea = e[p], eb = e[p + 1], ec = e[p + CHUNK_VERTS], ed = e[p + CHUNK_VERTS + 1];
       const edge = 0.01 * (ea + (eb - ea) * fx + (ec - ea) * fz + (ea - eb - ec + ed) * fx * fz);
-      if ((where >>> 20 & 1023) / 1024 >= grove(slot.x + x, slot.z + z, edge)) continue;
+      if ((where >>> 20 & 1023) / 1024 >= grove(slot.x + x, slot.z + z, edge) * (planted ? 1 - CEDAR_GAPS : 1)) continue;
       const a = v[o], b = v[o + S], c = v[o + next], d = v[o + next + S];
       const y = 0.01 * (fx + fz <= 1 ? a + (b - a) * fx + (c - a) * fz : d - (d - c) * (1 - fx) - (d - b) * (1 - fz));
-      const look = hash(slot.cx * cells + i, slot.cz * cells + j, 151), size = (look & 255) / 255;
+      const look = hash(si, sj, 151), size = (look & 255) / 255;
+      if (planted) {
+        const f = count * STALK_FLOATS;
+        stalks[f] = slot.x + x; stalks[f + 1] = y; stalks[f + 2] = slot.z + z;
+        stalks[f + 3] = CEDAR_TALL + CEDAR_TALLER * size;
+        stalks[f + 4] = CEDAR_RADIUS + CEDAR_THICKER * size;
+        stalks[f + 5] = CEDAR_STRIP + (look >>> 8 & 3);
+        stalks[f + 6] = CEDAR_LEAN * ((look >>> 13 & 255) / 127.5 - 1); stalks[f + 7] = CEDAR_LEAN * ((look >>> 21 & 255) / 127.5 - 1);
+        count++;
+        continue;
+      }
       // Leaning: a little any way, and out over the road, which is where the edge's distance falls.
       let leanX = LEAN * ((look >>> 13 & 255) / 127.5 - 1), leanZ = LEAN * ((look >>> 21 & 255) / 127.5 - 1);
       if (edge < LEAN_REACH) {
@@ -1280,7 +1319,8 @@ function plantClumps(slot) {
       const look = hash(slot.cx * squares + i, slot.cz * squares + j, 161);
       const f = count * CLUMP_FLOATS;
       clumps[f] = slot.x + x; clumps[f + 1] = y; clumps[f + 2] = slot.z + z;
-      clumps[f + 3] = CLUMP_TALL + CLUMP_TALLER * (look & 255) / 255;
+      // (A stand of cedars' height, negative: clump.vert's sign of one.)
+      clumps[f + 3] = cedar(slot.x + x, slot.z + z) ? -(CEDAR_TALL + CEDAR_TALLER * (look & 255) / 255) : CLUMP_TALL + CLUMP_TALLER * (look & 255) / 255;
       slot.clumpSquares[count] = i + j * squares;
       count++;
     }

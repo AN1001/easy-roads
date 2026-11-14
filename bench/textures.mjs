@@ -10,13 +10,19 @@
 
 import { writeFileSync } from 'fs';
 import { png } from './png.mjs';
-import { createTextures, createPuddles, TEXTURE_SIZE as N, TEXTURE_LAYERS, PUDDLE_SIZE, GRASS, SAND, LEAVES, CLOUDS, CLUMPS, FAR_LEAVES } from '../textures.js';
+import { createTextures, createPuddles, TEXTURE_SIZE as N, TEXTURE_LAYERS, PUDDLE_SIZE, GRASS, SAND, LEAVES, CLOUDS, CLUMPS, FAR_LEAVES,
+  CEDAR_BARK, CEDAR, FAR_CEDAR, CEDAR_CLUMPS } from '../textures.js';
 
 const [out = 'textures.png', zoom = 2] = process.argv.slice(2).map((a, i) => i ? Number(a) : a);
 // BANK, FLOOR, GRASS, SAND (terrain.frag); CULM, LEAF (bamboo.glsl: its greenest); the clouds (sky.frag's
 // thickest); the clumps and the far leaves (the leaves' colour, as clump.vert and leaves.vert shade them).
 const COLOURS = [[0.22, 0.20, 0.15], [0.22, 0.22, 0.13], [0.23, 0.30, 0.13], [0.50, 0.43, 0.31],
                  [0.30, 0.40, 0.15], [0.20, 0.32, 0.10], [0.5, 0.5, 0.5], [0.20, 0.32, 0.10], [0.20, 0.32, 0.10]];
+// The cedars' (stalk.vert's bark, leaves.vert's crowns, clump.vert's stands); the rest (the bridges',
+// trees' and bushes', drawn in their own colours) as they are.
+COLOURS[CEDAR_BARK] = [0.25, 0.16, 0.11];
+COLOURS[CEDAR] = COLOURS[FAR_CEDAR] = COLOURS[CEDAR_CLUMPS] = [0.12, 0.20, 0.12];
+for (let k = 0; k < TEXTURE_LAYERS; k++) COLOURS[k] ??= [0.25, 0.25, 0.25];
 
 const start = performance.now();
 const pixels = createTextures(), puddles = createPuddles();
@@ -25,7 +31,7 @@ console.log(`made in ${(performance.now() - start).toFixed(1)} ms`);
 const tile = 2 * N * zoom, width = TEXTURE_LAYERS * tile, rgb = Buffer.alloc(width * tile * 3);
 for (let y = 0; y < tile; y++) {
   for (let x = 0; x < width; x++) {
-    const k = Math.floor(x / tile), cards = k === LEAVES || k === CLUMPS || k === FAR_LEAVES, card = cards ? 2 : 1;
+    const k = Math.floor(x / tile), cards = [LEAVES, CLUMPS, FAR_LEAVES, CEDAR, FAR_CEDAR, CEDAR_CLUMPS].includes(k), card = cards ? 2 : 1;
     const u = Math.floor(x % tile / zoom / card) % N, v = N - 1 - Math.floor(y / zoom / card) % N;
     const o = ((k * N + v) * N + u) * 4, alpha = pixels[o + 3] / 255;
     for (let c = 0; c < 3; c++) {

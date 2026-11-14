@@ -25,14 +25,28 @@ out float vGrove;
 out vec2 vShore;    // m past the river's water's edge (-0.6 under it, 2.5 away from it), and how wide its shingle (m)
 out vec3 vDaylight;     // the daylight on it (sky.glsl), less under the groves
 out vec4 vMist;     // rgb: the mist's colour; a: how much of it
+out float vCedar;   // 1 in a cedar plantation, 0 not
 
-const float GROVE_SHADE = 0.4;
+const float GROVE_SHADE = 0.4, CEDAR_SHADE = 0.55;
 const float SHORE_UNDER = 0.6, SHINGLE_STEP = 0.35;  // m: as terrain.js's  // the thickest bamboo keeps this much of the sky off the ground
 
 // Vertices along each side of a chunk: must match CHUNK_VERTS in terrain.js.
 // A constant rather than a uniform, so the compiler can turn the divides below into a
 // multiply and shift (integer division is slow on GPUs).
 const int SIZE = 31, VERTICES = SIZE * SIZE;
+
+// Whether (x, z) is in a cedar plantation: terrain.js's cedar(), the same parcels, from the same hash
+// (its integer maths is the same here, to the bit). Its edges, from sin in 32-bit floats, can be a
+// few mm out from terrain.js's: no matter, they fall between the trees.
+const float CEDAR_CELL = 240.0, CEDAR_ODDS = 0.22, CEDAR_WARP = 30.0, CEDAR_WARP_WAVE = 90.0;  // terrain.js's
+bool inCedars(vec2 xz) {
+  vec2 warped = xz + CEDAR_WARP * sin(xz.yx / CEDAR_WARP_WAVE);
+  ivec2 cell = ivec2(floor(warped / CEDAR_CELL));
+  uint h = uint(cell.x) * 374761393u + uint(cell.y) * 668265263u + 170u * 1440662683u;
+  h = (h ^ (h >> 13)) * 1274126177u;
+  h ^= h >> 16;
+  return float(h) < CEDAR_ODDS * 4294967296.0;
+}
 
 void main() {
   int col = gl_VertexID % SIZE, row = gl_VertexID / SIZE;
@@ -55,7 +69,8 @@ void main() {
   vNormal = normal.xyz;
   vEdge = float(v.y) * 0.01;
   vGrove = normal.w;  // negative on a river's bed (terrain.js)
-  vDaylight = daylight(normalize(normal.xyz)) * (1.0 - GROVE_SHADE * max(vGrove, 0.0));
+  vCedar = inCedars(vec2(x, z)) ? 1.0 : 0.0;
+  vDaylight = daylight(normalize(normal.xyz)) * (1.0 - mix(GROVE_SHADE, CEDAR_SHADE, vCedar) * max(vGrove, 0.0));
   vMist = vec4(mistColor(vWorldPos), mist(vWorldPos));
   gl_Position = uViewProj * vec4(vWorldPos, 1.0);
 }
