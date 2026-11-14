@@ -42,16 +42,24 @@ export function createTextureArray(gl, pixels, size, layers) {
 // A shader's source. GLSL has no includes, so a line `#include "file"` is replaced by that file,
 // from the same folder: shaders share the Frame block and the sky's light and mist that way.
 // (A compile error's line numbers count the included lines too.)
+// Each included file is fetched once, however many shaders include it (frame.glsl: 23 of them; 68
+// fetches in all for 8 files, until 14 Nov 2026).
+const included = new Map();  // url → a promise of its text
+function fetchOnce(url) {
+  if (!included.has(url)) included.set(url, fetch(url).then(r => r.text()));
+  return included.get(url);
+}
 async function fetchShader(url) {
   const folder = url.slice(0, url.lastIndexOf('/') + 1);
   const parts = (await fetch(url).then(r => r.text())).split(/^#include "(.+)"$/m);  // odd: names
-  return (await Promise.all(parts.map((part, k) =>
-    k % 2 ? fetch(folder + part).then(r => r.text()) : part))).join('');
+  return (await Promise.all(parts.map((part, k) => k % 2 ? fetchOnce(folder + part) : part))).join('');
 }
 
-// Fetch a vertex + fragment shader pair and link them into a program.
-// Only the link status is checked: every status check makes JS wait for the GPU process
-// to finish compiling, and a failed compile makes the link fail anyway.
+// Fetch a vertex + fragment shader pair and link them into a program. Nothing is checked here:
+// every status check makes JS wait for the GPU process to finish compiling that program, while the
+// others' sources wait to be sent. The programs compile side by side instead, and checkPrograms
+// asks after them all once they've all been sent.
+const unchecked = [];
 export async function loadProgram(gl, vertexUrl, fragmentUrl) {
   const [vertexSource, fragmentSource] = await Promise.all([fetchShader(vertexUrl), fetchShader(fragmentUrl)]);
 
@@ -61,9 +69,16 @@ export async function loadProgram(gl, vertexUrl, fragmentUrl) {
   gl.attachShader(program, vertex);
   gl.attachShader(program, fragment);
   gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    throw new Error(`${vertexUrl} + ${fragmentUrl}\n` +
-      `${gl.getShaderInfoLog(vertex)}${gl.getShaderInfoLog(fragment)}${gl.getProgramInfoLog(program)}`);
-  }
+  unchecked.push({ program, vertex, fragment, names: `${vertexUrl} + ${fragmentUrl}` });
   return program;
+}
+
+// Whether every program loaded so far linked: an error for the first that didn't, with the
+// compilers' messages. Only the link status is asked for: a failed compile makes the link fail anyway.
+export function checkPrograms(gl) {
+  for (const { program, vertex, fragment, names } of unchecked.splice(0)) {
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      throw new Error(`${names}\n${gl.getShaderInfoLog(vertex)}${gl.getShaderInfoLog(fragment)}${gl.getProgramInfoLog(program)}`);
+    }
+  }
 }
