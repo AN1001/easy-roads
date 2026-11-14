@@ -1,4 +1,4 @@
-import { loadProgram, loadTexture, createTextureArray } from './gl.js';
+import { loadProgram, checkPrograms, loadTexture, createTextureArray } from './gl.js';
 import { mat4, multiply, perspective, lookAt, frustumPlanes, boxInFrustum,
   translation, rotationX, rotationY } from './math.js';
 import { createTerrain, CHUNK_QUADS, VERTEX_SHORTS, STALK_FLOATS, CLUMP_FLOATS } from './terrain.js';
@@ -26,6 +26,7 @@ import { createHint, createJoystick, touchScreen } from './ui.js';
 //   nonature: no ground cover (nature.js: grass, ferns, bushes, rocks), to measure what it costs
 //   step=60: each frame moves the game on 1/60 s, however long it took: the same drive frame by
 //     frame, however slowly it's drawn (bench/headless.mjs, with a software renderer)
+performance.mark('main.js runs');  // (bench/startup.mjs reads these marks)
 const params = new URLSearchParams(location.search);
 const autodrive = params.has('autodrive');
 const followRoad = params.get('autodrive') === 'road';
@@ -33,6 +34,32 @@ const fixedSize = params.get('size')?.split('x').map(Number);
 const cull = !params.has('nocull');
 const natureOn = !params.has('nonature');
 const fixedStep = params.has('step') ? 1000 / (Number(params.get('step')) || 60) : 0;  // ms
+
+// --- Workers, started before anything else: each takes a while to start (its modules to load and
+// compile), and meanwhile this thread gets on with the rest ---
+
+// The textures for the ground, the bamboo and the clouds, and the puddles, are made while the game's
+// files load: in a worker (texture-worker.js), where one starts, so this thread is free to hand each
+// shader to the compiler as it arrives (made here, they held everything up for ~100 ms: until 14 Nov
+// 2026); else here.
+const texturesMade = new Promise(resolve => {
+  const here = () => resolve({ pixels: createTextures(), puddles: createPuddles() });
+  try {
+    const worker = new Worker(new URL('texture-worker.js', import.meta.url), { type: 'module' });
+    worker.onmessage = ({ data }) => { resolve(data); worker.terminate(); };
+    worker.onerror = here;
+  } catch { here(); }
+});
+
+// The land's chunks are built in workers (terrain-worker.js: see Terrain, below).
+// Up to three of them, on the cores to spare: one keeps up with the driving; the rest are for the
+// start and a tow, when ~260 chunks are due at once (~330 ms of building for one).
+const builders = [];
+try {
+  for (let k = Math.min(3, Math.max(1, (navigator.hardwareConcurrency ?? 4) - 2)); k > 0; k--) {
+    builders.push(new Worker(new URL('terrain-worker.js', import.meta.url), { type: 'module' }));
+  }
+} catch {}
 
 const canvas = document.querySelector('canvas');
 // No antialiasing (multisampling): measured to roughly halve the GPU cost per pixel,
@@ -47,6 +74,8 @@ const profiler = params.has('profile')
   : null;
 window.profiler = profiler;
 
+// (Awaited further down, each where it's first needed: what needs none of them is set up meanwhile.)
+const carMeshesLoading = loadCarMeshes(), broadleafLoading = loadBroadleaf();
 const loading = Promise.all([
   loadProgram(gl, 'shaders/terrain.vert', 'shaders/terrain.frag'),
   loadProgram(gl, 'shaders/car.vert', 'shaders/car.frag'),
@@ -58,23 +87,18 @@ const loading = Promise.all([
   loadProgram(gl, 'shaders/clump.vert', 'shaders/clump.frag'),
   loadProgram(gl, 'shaders/built.vert', 'shaders/built.frag'),
   loadProgram(gl, 'shaders/water.vert', 'shaders/water.frag'),
-  loadCarMeshes(),
+  carMeshesLoading,
   loadTexture(gl, 'assets/Car 03/car3_zen.png'),  // bench/livery.mjs --zen: car3.png's green, the bumper's brake light
   loadTexture(gl, 'assets/Wheel/wheel.png'),
   loadProgram(gl, 'shaders/tree.vert', 'shaders/tree.frag'),
-  loadBroadleaf(),
+  broadleafLoading,
   loadTexture(gl, 'assets/tree_01/tree_01.png'),
   loadProgram(gl, 'shaders/nature.vert', 'shaders/nature.frag'),
 ]);
-// The textures for the ground, the bamboo and the clouds, and the puddles, are made while those files load.
-const texturesStart = performance.now();
-const texturePixels = createTextures(), puddleTexels = createPuddles();
-console.log(`textures: made in ${(performance.now() - texturesStart).toFixed(1)} ms`);
-const [terrainProgram, carProgram, particleProgram, stalkProgram, leavesProgram, rainProgram, skyProgram,
-  clumpProgram, builtProgram, waterProgram, carMeshes, bodyTexture, wheelTexture, treeProgram, broadleafShapes, broadleafTexture,
-  natureProgram] = await loading;
-
 // --- Terrain ---
+//
+// Made now, and the chunks round the start asked of the workers at once (prebuild), so they're built
+// while the files load.
 
 // Mist: none within FOG_START m, solid mist from FOG_END m, and in between thickening as real mist
 // does: each FOG_THICKNESS m of it hides about two thirds of what's behind (sky.glsl), so ridge after
@@ -99,19 +123,23 @@ const SEEN = FOG_START - FOG_THICKNESS * Math.log(1 - 0.96 * (1 - Math.exp(-(FOG
 // Built in a worker (terrain-worker.js), off the main thread, where one starts (a module worker);
 // terrain.js still builds here, at once, what's needed at once: a hole in view, the ground under the
 // car. (All of it here, within BUILD_BUDGET a frame, until 3 Oct 2026: ~0.25 ms a frame in Node,
-// driving the road, more catching up.)
-let builder = null;
-try { builder = new Worker(new URL('terrain-worker.js', import.meta.url), { type: 'module' }); } catch {}
-const terrain = createTerrain({ draw: FOG_END, ahead: AHEAD, detail: DETAIL, worker: builder });
+// driving the road, more catching up.) `builders`, started above.
+const terrain = createTerrain({ draw: FOG_END, ahead: AHEAD, detail: DETAIL, workers: builders });
 // By default, the lane nearest (600, -330), near the middle of the world. Copied, since the next
 // call to nearestRoad reuses the object it answers with.
 const [spawnX, spawnZ, spawnBack] = params.get('spawn')?.split(',') ?? [600, -330];
 const spawn = { ...terrain.nearestRoad(Number(spawnX), Number(spawnZ)) };
 if (spawnBack === 'back') spawn.heading += Math.PI;
 if (spawnBack === 'at') Object.assign(spawn, { x: Number(spawnX), z: Number(spawnZ), heading: Number(params.get('spawn').split(',')[3] ?? 0) * Math.PI / 180 });
-const buildStart = performance.now();
-terrain.update(spawn.x, spawn.z, Infinity);
-console.log(`terrain: ${terrain.slots.filter(slot => slot.ready).length} chunks built in ${(performance.now() - buildStart).toFixed(1)} ms`);
+// (The view's half-angle across, from `resize`'s 45° up and down and the window's shape, and 12° more:
+// the camera looks down a little, which widens it on the ground.)
+const landBuilt = terrain.prebuild(spawn.x, spawn.z, Math.sin(spawn.heading), Math.cos(spawn.heading),
+  Math.min(1.5, Math.atan(Math.tan(Math.PI / 8) * (fixedSize ? fixedSize[0] / fixedSize[1] : innerWidth / innerHeight)) + 0.2));
+
+// The bridges and trees round the start found now. (Without workers, all the land built here and
+// now too, as it was with one until 14 Nov 2026: ~330 ms.)
+terrain.update(spawn.x, spawn.z, builders.length ? 0 : Infinity);
+performance.mark('bridges and trees found');
 
 // --- Meshes. Each gets a Vertex Array Object (VAO), which remembers its buffers and
 // layout, so switching mesh each frame is one bind call instead of re-describing it ---
@@ -166,6 +194,7 @@ function createModelVao({ vertices, indices }) {
   gl.bindVertexArray(null);
   return vao;
 }
+const carMeshes = await carMeshesLoading;
 const bodyVao = createModelVao(carMeshes.body);
 const wheelVao = createModelVao(carMeshes.wheel);
 const bodyIndexCount = carMeshes.body.indices.length;
@@ -260,6 +289,7 @@ let builtVersion = -1, treesVersion = -1;
 // turned, its size: 5 floats), refilled whenever terrain.js finds a different set of trees, each
 // drawn with one call for all of them.
 // Their indices in one buffer too, each shape's counted from its own first vertex.
+const broadleafShapes = await broadleafLoading;
 const broadleafBuffer = gl.createBuffer(), broadleafIndices = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, broadleafBuffer);
 {
@@ -590,25 +620,15 @@ for (let k = 0; k < TURNS; k++) {
 }
 gl.bindVertexArray(null);
 
-// The texture array stays on texture unit 1 for good; the car's take turns on unit 0.
-gl.activeTexture(gl.TEXTURE1);
-createTextureArray(gl, texturePixels, TEXTURE_SIZE, TEXTURE_LAYERS);
-// The puddles (textures.js) on unit 5, for the land. Up close, sharp texels, like the ground's; where
-// a pixel spans many, the share of them that are puddle, blurred from the mipmaps along the ground
-// as far as it reaches, as the GPU can (anisotropic filtering), rather than every way as far as the
-// most: the road seen at a slant, a pixel reaches far along it and hardly across.
-gl.activeTexture(gl.TEXTURE5);
-gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
-gl.texStorage2D(gl.TEXTURE_2D, Math.log2(PUDDLE_SIZE) + 1, gl.RG8, PUDDLE_SIZE, PUDDLE_SIZE);
-gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, PUDDLE_SIZE, PUDDLE_SIZE, gl.RG, gl.UNSIGNED_BYTE, puddleTexels);
-gl.generateMipmap(gl.TEXTURE_2D);
-gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-const anisotropic = gl.getExtension('EXT_texture_filter_anisotropic');
-if (anisotropic) {
-  gl.texParameterf(gl.TEXTURE_2D, anisotropic.TEXTURE_MAX_ANISOTROPY_EXT,
-    Math.min(16, gl.getParameter(anisotropic.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
-}
+// Everything above needed no shader: from here on, the programs (and the textures loaded from files).
+performance.mark('set up without the files');
+const [terrainProgram, carProgram, particleProgram, stalkProgram, leavesProgram, rainProgram, skyProgram,
+  clumpProgram, builtProgram, waterProgram, , bodyTexture, wheelTexture, treeProgram, , broadleafTexture,
+  natureProgram] = await loading;
+performance.mark('files loaded');
+checkPrograms(gl);
+performance.mark('shaders compiled');
+
 // The broadleaf trees' texture on unit 6, with mipmaps (blended between levels, and within them:
 // it's a photo, not texel art), so the leaves don't shimmer far off.
 gl.activeTexture(gl.TEXTURE6);
@@ -1345,4 +1365,34 @@ function frame(realMs) {
   profiler?.frameEnd();
   requestAnimationFrame(frame);
 }
+
+// --- The last things waited for: the textures made in the worker, and the land ahead ---
+
+performance.mark('set up');
+const { pixels: texturePixels, puddles: puddleTexels } = await texturesMade;
+performance.mark('textures made');
+// The texture array stays on texture unit 1 for good; the car's take turns on unit 0.
+gl.activeTexture(gl.TEXTURE1);
+createTextureArray(gl, texturePixels, TEXTURE_SIZE, TEXTURE_LAYERS);
+// The puddles (textures.js) on unit 5, for the land. Up close, sharp texels, like the ground's; where
+// a pixel spans many, the share of them that are puddle, blurred from the mipmaps along the ground
+// as far as it reaches, as the GPU can (anisotropic filtering), rather than every way as far as the
+// most: the road seen at a slant, a pixel reaches far along it and hardly across.
+gl.activeTexture(gl.TEXTURE5);
+gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+gl.texStorage2D(gl.TEXTURE_2D, Math.log2(PUDDLE_SIZE) + 1, gl.RG8, PUDDLE_SIZE, PUDDLE_SIZE);
+gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, PUDDLE_SIZE, PUDDLE_SIZE, gl.RG, gl.UNSIGNED_BYTE, puddleTexels);
+gl.generateMipmap(gl.TEXTURE_2D);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+const anisotropic = gl.getExtension('EXT_texture_filter_anisotropic');
+if (anisotropic) {
+  gl.texParameterf(gl.TEXTURE_2D, anisotropic.TEXTURE_MAX_ANISOTROPY_EXT,
+    Math.min(16, gl.getParameter(anisotropic.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+}
+gl.activeTexture(gl.TEXTURE0);
+// The land ahead back from the workers; the rest follows during the first frames, out of sight, and
+// the first frame fills any hole left in view (as after a tow). (Built here, if the workers failed.)
+if (!await landBuilt) terrain.update(spawn.x, spawn.z, Infinity);
+performance.mark(`land ahead built (${terrain.slots.filter(slot => slot.ready).length} chunks)`);
 requestAnimationFrame(frame);

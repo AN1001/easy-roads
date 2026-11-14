@@ -1102,7 +1102,7 @@ export function newSlot(index, level) {
     minY: 0, maxY: 0,    // the box it fits in (skirts included), for culling
     rowsBuilt: -1,       // rows of `heights` done; -1: not started
     ready: false,        // all its rows built
-    pending: false,      // asked of the worker (createTerrain's `worker`), and not back yet
+    pending: false,      // asked of a worker (createTerrain's `workers`), and not back yet
     version: 0,          // goes up each time it's rebuilt, so main.js knows to re-upload it
     roads: createRoadList(ROAD_PIECES),
     // Near a river, its water's layer: per vertex, the water's height in cm and how deep it is
@@ -1385,12 +1385,12 @@ function unpackChunk(slot, chunk) {
 //     100 m, 2 m within 220 m, 4 m beyond. Empty: 1 m squares throughout.
 //   radius: at most this many chunks of the coarsest level built each way from the camera's (the
 //     benches build a square of them).
-//   worker: a Worker running terrain-worker.js, to build the chunks off the main thread (see
+//   workers: Workers running terrain-worker.js, to build the chunks off the main thread (see
 //     update); none: they're built here, a row at a time, within a budget each frame.
 // Each level keeps its chunks in a ring of n × n slots: chunk (cx, cz) always uses slot
 // (cx mod n, cz mod n), so when the camera moves on, the chunks it leaves behind free exactly the
 // slots the new ones need. n is enough for every chunk the level can want at once.
-export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius = Infinity, worker = null } = {}) {
+export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius = Infinity, workers = [] } = {}) {
   const top = detail.length;  // the coarsest level
   const levels = [], slots = [];
   for (let level = 0; level <= top; level++) {
@@ -1466,34 +1466,87 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
     slot.pending = false;  // (whatever the worker sends back for its last chunk isn't wanted)
   }
 
-  // With a worker: each frame, the chunks needed soonest are asked of it, IN_FLIGHT at most at a
-  // time (so what it's building is never far from what's wanted most); each comes back whole,
-  // between frames, into its slot, if the slot's still waiting for it. (A chunk ~0.5 ms there.)
+  // With workers: each frame, the chunks needed soonest are asked of them, IN_FLIGHT each at most at
+  // a time (so what they're building is never far from what's wanted most); each comes back whole,
+  // between frames, into its slot, if the slot's still waiting for it. (A chunk ~1.3 ms there.) One
+  // worker does while driving; the others are for the start and a tow, when hundreds are due at once.
   const IN_FLIGHT = 4;
-  let inFlight = 0;
+  const flights = workers.map(() => 0);  // per worker, the chunks asked of it and not back yet
   const spares = [];  // the buffers chunks came in, to go back with the next asks
-  if (worker) {
-    // (If it can't start or fails, everything's built here again, as without one.)
+  let askX = NaN, askZ = NaN;  // where the chunks asked for are wanted round: update's last
+  let prebuilding = null;      // prebuild's promise's resolve, until those it waits for are back
+  // The worker with the fewest chunks in flight, if under IN_FLIGHT; else -1.
+  function freest() {
+    let best = -1;
+    for (let w = 0; w < workers.length; w++) if (workers[w] && flights[w] < IN_FLIGHT && (best < 0 || flights[w] < flights[best])) best = w;
+    return best;
+  }
+  function ask(slot, w) {
+    slot.pending = true;
+    flights[w]++;
+    const spare = spares.pop();
+    workers[w].postMessage({ level: slot.level, cx: slot.cx, cz: slot.cz, spare }, spare ? [spare] : []);
+  }
+  const askDue = (x, z) => { for (let w, slot; (w = freest()) >= 0 && (slot = mostDue(x, z)); ) ask(slot, w); };
+  workers.forEach((worker, w) => {
+    // (If one can't start or fails, the others carry on; with none left, everything's built here
+    // again, as without any. What was asked of it is asked again, or built here.)
     worker.onerror = () => {
-      worker = null;
-      inFlight = 0;
+      workers[w] = null;
+      flights[w] = 0;
       for (const slot of slots) slot.pending = false;
+      prebuilt();
     };
     worker.onmessage = ({ data }) => {
-      inFlight--;
+      flights[w]--;
       const slot = slotAt(data.level, data.cx, data.cz);
       if (slot.pending && slot.cx === data.cx && slot.cz === data.cz) {
         slot.pending = false;
         if (!slot.ready) unpackChunk(slot, data);  // (ready: built here meanwhile, needed at once)
+        if (awaited[slot.index]) { awaited[slot.index] = 0; awaitedLeft--; }
       }
-      spares.push(data.bytes);
+      if (spares.length < 2 * IN_FLIGHT) spares.push(data.bytes);
+      // And the next ones asked for at once, not at the next frame's update: after a tow, when
+      // hundreds are due, the workers would otherwise wait most of each frame for their next four.
+      if (askX === askX) askDue(askX, askZ);
+      prebuilt();
     };
+  });
+  const working = () => workers.some(worker => worker);
+  // Every chunk due round (x, z) asked of the workers now, before the first update, shared out
+  // among them: main.js calls this as it starts, so the land is built while the shaders and models
+  // load (all of it at once, not IN_FLIGHT at a time: this thread is too busy then to keep handing
+  // them out). Those the camera may see first, looking along (dirX, dirZ) from just behind (x, z),
+  // `halfAngle` (radians) to either side: the chunks in that wedge and those within NEARBY m, the
+  // nearest first; then the rest, which come back during the first frames, unseen. A promise, kept
+  // once the first lot are all back: whether the workers are doing the building (false with none:
+  // update's to). (Only a guess at the view: the first frame's update fills any hole in it.)
+  const NEARBY = 100, BEHIND = 20;  // m; the wedge's point is BEHIND m back (the camera's ~10)
+  const awaited = new Uint8Array(slots.length);  // by slot: one of those the promise waits for
+  let awaitedLeft = 0;
+  function prebuilt() {
+    if (prebuilding && (awaitedLeft === 0 || !working())) { prebuilding(working()); prebuilding = null; awaited.fill(0); awaitedLeft = 0; }
   }
-  function ask(slot) {
-    slot.pending = true;
-    inFlight++;
-    const spare = spares.pop();
-    worker.postMessage({ level: slot.level, cx: slot.cx, cz: slot.cz, spare }, spare ? [spare] : []);
+  function prebuild(x, z, dirX, dirZ, halfAngle) {
+    if (!working()) return Promise.resolve(false);
+    askX = x; askZ = z;
+    const due = [], sin = Math.sin(halfAngle), cos = Math.cos(halfAngle);
+    for (let slot; (slot = mostDue(x, z)); ) {
+      slot.pending = true;  // (so mostDue goes on to the next)
+      // Its middle from (x, z), ahead and to the side; in the wedge if any of the circle round it is.
+      const mx = slot.x + slot.size / 2 - x, mz = slot.z + slot.size / 2 - z, reach = slot.size * Math.SQRT1_2;
+      const ahead = mx * dirX + mz * dirZ + BEHIND, aside = Math.abs(mx * dirZ - mz * dirX), range = Math.hypot(mx, mz);
+      const first = range < NEARBY + reach || (ahead > -reach && aside * cos - ahead * sin < reach);
+      due.push({ slot, order: first ? range : 1e6 + range });
+    }
+    due.sort((a, b) => a.order - b.order);
+    due.forEach(({ slot, order }, k) => {
+      let w = k % workers.length;
+      while (!workers[w]) w = (w + 1) % workers.length;
+      if (order < 1e6) { awaited[slot.index] = 1; awaitedLeft++; }
+      ask(slot, w);
+    });
+    return new Promise(resolve => { prebuilding = resolve; prebuilt(); });
   }
 
   // The unbuilt chunk needed soonest, given a slot; or null if all are built. How soon a chunk is
@@ -1605,7 +1658,7 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
   // the finer chunks carry the bamboo's stalks and the ground cover, which, late, would be seen
   // arriving (asked for, 3 Oct 2026: "objects load in dramatically around me").
   //
-  // With a worker, none of that: the chunks due are asked of it (the budget unused, but for
+  // With workers, none of that: the chunks due are asked of them (the budget unused, but for
   // Infinity: everything built here and now, as at the start), and only the holes in view built here.
   const ROWS_PER_MS = 100, CATCH_UP = 3;
   let behind = 0;  // holes filled past the budget, last update
@@ -1613,8 +1666,9 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
     findBridges(x, z);
     findTrees(x, z);
     let rows = 0;
-    if (worker && budget !== Infinity) {
-      for (let slot; inFlight < IN_FLIGHT && (slot = mostDue(x, z)); ) ask(slot);
+    askX = x; askZ = z;
+    if (working() && budget !== Infinity) {
+      askDue(x, z);
     } else {
       const start = performance.now();
       let slot = null, limit = budget;
@@ -2006,7 +2060,7 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
     return riverDistance(x, z) < RIVER_HALF + 1 ? waterLevel(x, z) : -Infinity;
   }
 
-  return { slots, indices, update, heightAt, groundAt, waterAt, edgeAt, bridges, get bridgesVersion() { return bridgesVersion; },
+  return { slots, indices, update, prebuild, heightAt, groundAt, waterAt, edgeAt, bridges, get bridgesVersion() { return bridgesVersion; },
            trees, get treesVersion() { return treesVersion; }, nearestRoad, roadDistanceAt, slotFor, slotAt, drawList,
            get drawCount() { return drawCount; }, get behind() { return behind; } };
 }

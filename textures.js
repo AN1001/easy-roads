@@ -179,8 +179,11 @@ function pack(layer, pixels, k) {
   let sum = 0;
   for (let o = 0; o < layer.length; o += 4) sum += layer[o] + layer[o + 1] + layer[o + 2];
   const scale = 3 * 127.5 * N * N / sum;
-  for (let o = 0; o < layer.length; o++) {
-    pixels[base + o] = Math.min(255, Math.round(layer[o] * ((o & 3) === 3 ? 255 : scale)));
+  for (let o = 0; o < layer.length; o += 4) {  // (a texel at a time: no test per value for which is alpha)
+    pixels[base + o] = Math.min(255, Math.round(layer[o] * scale));
+    pixels[base + o + 1] = Math.min(255, Math.round(layer[o + 1] * scale));
+    pixels[base + o + 2] = Math.min(255, Math.round(layer[o + 2] * scale));
+    pixels[base + o + 3] = Math.min(255, Math.round(layer[o + 3] * 255));
   }
 }
 
@@ -480,6 +483,7 @@ function blossom(layer) {
       for (let u = Math.floor(cu - radius - 1); u <= cu + radius + 1; u++) {
         if (u < 1 || v < 1 || u >= N - 1 || v >= N - 1) continue;
         const du = u + 0.5 - cu, dv = v + 0.5 - cv, d = Math.hypot(du, dv) / radius;
+        if (d > 1) continue;  // (a petal reaches 1 at most)
         const petals = 0.75 + 0.25 * Math.cos(5 * (Math.atan2(dv, du) + turn));
         if (d > petals) continue;
         const o = (v * N + u) * 4;
@@ -519,7 +523,10 @@ function petals(layer) {
 // its own shade (a few lighter, a few yellowing), a darker midrib, overlapping in a lumpy round clump
 // (alpha 1 on a leaf, 0 between and round the edge, as the blossom's). Near grey, so the colour it's
 // drawn in tints it: green on the bushes, red, orange and gold on the maples.
+// (Made once and kept: the flowering leaves start from the same card.)
+let leafCard = null;
 function leaf(layer) {
+  if (leafCard) { layer.set(leafCard); return; }
   for (let o = 0; o < layer.length; o += 4) { layer[o] = 1; layer[o + 1] = 1; layer[o + 2] = 1; layer[o + 3] = 0; }
   const middle = N / 2;
   for (let k = 0; k < 220; k++) {
@@ -534,7 +541,7 @@ function leaf(layer) {
         if (u < 1 || v < 1 || u >= N - 1 || v >= N - 1) continue;
         const pu = u + 0.5 - cu, pv = v + 0.5 - cv;
         const along = (pu * du0 + pv * dv0) / length, across = (pv * du0 - pu * dv0) / width;  // along: -1 to 1
-        if (along < -1 || along > 1) continue;
+        if (along < -1 || along > 1 || across < -1 || across > 1) continue;  // (half is 1 at most)
         const half = Math.sin(Math.PI * (along + 1) / 2) ** 0.8 * (1 - 0.35 * Math.max(along, 0));  // pointed at the tip
         if (Math.abs(across) > half) continue;
         const rib = Math.abs(across) < 0.12 ? 0.8 : 1;
@@ -544,6 +551,7 @@ function leaf(layer) {
       }
     }
   }
+  leafCard = layer.slice();
 }
 
 // Leaves in flower, for the flowering bushes (nature.js): the leaves' card, with five-petalled

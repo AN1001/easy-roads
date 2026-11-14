@@ -48,8 +48,16 @@ const { treeModel } = await import(new URL('trees.js', ROOT));
 const workers = [];
 if (mode !== 'noworker') {
   globalThis.Worker = class {
-    constructor(url) { this.trees = String(url).endsWith('tree-worker.js'); this.slots = []; this.spares = []; this.asked = []; workers.push(this); }
-    postMessage(data) { this.asked.push(data); }
+    constructor(url) {
+      if (String(url).endsWith('texture-worker.js')) throw new Error('none here');  // (main.js makes the textures itself then)
+      this.trees = String(url).endsWith('tree-worker.js'); this.slots = []; this.spares = []; this.asked = []; workers.push(this);
+    }
+    // (Before the game's first frame, main.js waits for the land asked for as it starts: made soon,
+    // as a message would be.)
+    postMessage(data) {
+      this.asked.push(data);
+      if (!callback && !this.soon) this.soon = setTimeout(() => { this.soon = null; this.work(); });
+    }
     work() {  // the worker's onmessage, for each ask
       for (const data of this.asked.splice(0)) {
         if (this.trees) { this.onmessage({ data: { id: data.id, ...treeModel(data.tree, data.detailed) } }); continue; }

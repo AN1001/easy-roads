@@ -142,6 +142,7 @@ Misty, pixelated, low-poly. What makes it, and where it lives:
 | **Levels of detail: a vertex every 1 m within 100 m, 2 m within 220 m, 4 m to 400 m** | `terrain.js` (`createTerrain`, `select`), `main.js` (`DETAIL`), `terrain.vert` (`uChunk`) | Every chunk is 31 × 31 vertices, so coarser ones cover 60 or 120 m. A chunk gives way to its 4 finer children only once they can all be drawn: no holes while they're built. Skirts hide the cracks between levels. ~240 chunks built instead of ~740; ~52 drawn instead of ~170; terrain GPU 1.68 → 0.95 ms |
 | **Chunks kept in rings** of 14², 13² and 9² slots, one per level | `terrain.js` | Chunk (cx, cz) of a level always lives in slot (cx mod n, cz mod n): the chunks left behind free exactly the slots the new ones need. No map lookups, no allocation, and each slot keeps its GPU buffer and VAO for good (`bufferData` refills it, with new storage: see "Nothing the GPU may still be reading is written to") |
 | **Chunks built before they're needed, soonest first** | `terrain.js` (`mostDue`), `main.js` (`AHEAD`) | By distance, not by whole rows of chunks: they come into range a few at a time, each 40 m (1.1 s at top speed) before it's needed: before the fog shows it, or before its level takes over |
+| **At the start, the land built in up to three workers while the files load; the textures in a worker too** | `main.js`, `terrain.js` (`prebuild`), `texture-worker.js`, `gl.js` (`checkPrograms`), `build.sh` | First frame ~1,170 → ~800 ms on a busy machine (see "Starting up faster"): only the chunks the camera may see are waited for, included shader files are fetched once, the programs compile side by side, and what needs no file is set up meanwhile |
 | **Chunks built in a worker; on the main thread only what's needed at once** | `terrain-worker.js`, `terrain.js` (`update`, `buildChunk`, `packChunk`), `main.js` | A module worker builds whole chunks (~0.5 ms each), the soonest due first, four asked at a time; each comes back packed into one transferred buffer, which goes back with a later ask (3 Oct 2026). The main thread still builds a hole on screen within 333 m (`SEEN`) and the ground under the car at once, and everything where no worker starts (a row at a time, within `BUILD_BUDGET` ms a frame, up to `CATCH_UP` times it when behind, at most `ROWS_PER_MS` rows per ms: Firefox's clock is rounded to 1 ms). Main thread 0.33 → 0.11 ms a frame for the terrain in Node, driving the road |
 | **Rows skip roads that can't matter** | `terrain.js` (`nearbyRoads`, `farFromRoads`) | Per 11 vertices of a row, only the pieces whose edge comes within LAND_ROUNDING of the nearest (the smooth minimums reach no further); where every road is 76.5 m+ away, no road maths at all. The same bytes exactly |
 | Each chunk finds its nearby road pieces once | `terrain.js` (`findRoads`) | Room for 176 pieces within 79.5 m of the chunk (the most measured: 83), so each vertex checks a handful instead of the whole network |
@@ -206,6 +207,53 @@ Misty, pixelated, low-poly. What makes it, and where it lives:
 The cube (`shaders/cube.*`) is no longer in the game, but `bench/frames.html` still profiles it.
 
 ## Measurements
+
+### Starting up faster (14 Nov 2026)
+
+Asked for: optimisations, and shorter start-up. Measured with `bench/startup.mjs` (new: a fresh
+headless Chrome each run, nothing cached; the time the first frame is done, main.js's marks, the
+fetches, a CPU profile of the load), at 576 × 360 from the local server. The machine was busy (load
+average 9-12, Zen running), so old and new were run turn about, 5 runs each, twice:
+**first frame done, median 1,162 and 1,180 ms → 820 and 780 ms** (best 1,023 → 705). The first frame
+and the 40th are the same pixels as before (`HOLD`, `bench/diff.mjs`: 0 of 207,360 differ).
+
+Where the ~1,010 ms went (a quieter moment): ~135 ms before main.js ran (its 15 modules); ~410 ms
+until the files were in (120 fetches, 68 of them the shaders' 8 included files over and over; the
+textures made meanwhile on this thread, ~100 ms, holding up every shader's compile); ~365 ms building
+all 257 chunks here (1.26 ms each now, with the rivers; the worker was only used once driving); ~110
+ms of setting up and the first frame. What changed:
+
+- **The land built in workers while the files load** (`terrain.prebuild`): up to three workers
+  (`hardwareConcurrency − 2`, at least one), all the chunks due asked of them at once as main.js
+  starts, shared out, those the camera may see first (a wedge along the spawn's heading, and within
+  100 m). main.js waits only for those (~130-200 of 257); the rest come back during the first frames,
+  behind the camera, and the first frame fills any hole in view as after a tow. One worker asked
+  four at a time had built 9 by the time the files were in: it starts ~200 ms after it's made, and
+  this thread was too busy to hand it its next four. Each answer now also asks for the next ones
+  (not only each frame's update): after a tow the workers no longer idle most of each frame.
+- **Textures made in a worker** (`texture-worker.js`), handed over; here if it can't start. Slower
+  there (~300 ms with every core busy, against ~115 here) but in nobody's way. And less work: the
+  leaves' card made once (the flowering one starts from a copy), leaf and blossom texels outside the
+  shape skipped before the sines, `pack` a texel at a time: 65 → 41 ms warm in Node, the same bytes.
+- **Each included shader file fetched once** (`gl.js`): 120 fetches → 69.
+- **No waiting on each program's link** (`checkPrograms`): all are sent to the compiler as they
+  arrive, and asked after together. 126-144 ms of this thread blocked → 40-75.
+- **Set-up that needs no file done during the wait**: main.js awaits the car's and the tree's models
+  where they're first used, the programs where the uniforms are set, and the textures and the land
+  last of all, just before the first frame.
+- **Deployed: `modulepreload` links** for main.js's modules, written into dist/index.html by
+  `build.sh`. At 8 Mbit/s and 40 ms a request (`THROTTLE=8000,40`): 2,057 ms before any of this,
+  ~1,570 with the above, ~1,495 with the links. `preload as="fetch"` for the shaders and models as
+  well was tried and dropped: slowed down like that, reading tree_01.png's body failed part-way
+  ("Failed to fetch") and the game never started.
+
+Not done: the textures are what the start waits for now (~600 ms in, the worker competing with the
+land's for 4 cores); zero-filling the bamboo's 11 MB texture is ~30-50 ms (for Firefox: see
+`dataTexture`). Driving, 25 s of `autodrive=road` afterwards: 1 late frame of 1,456, JS mean 1.0 ms,
+GPU ~3.6 ms a frame, the ground cover the most (1.2 ms), then the trees (0.66), the land (0.55) and
+the leaves (0.48). Node (`bench/loop.mjs`): JS 0.28 ms a frame as before; of 172 KB of garbage a
+frame there, all but ~25 KB is the land's building, which is in the workers in a browser. Zen not
+measured.
 
 ### Cedar plantations (4 Oct 2026)
 
@@ -3564,6 +3612,8 @@ Ranked by the frame-budget measurements (biggest win for fullscreen ultrawide fi
 - [x] **Terrain generation in a Web Worker** (3 Oct 2026): `terrain-worker.js`; the main thread keeps
       building what's needed at once (holes in view, the ground under the car) and everything without one.
 - [ ] **Precompile all shaders at load** so nothing compiles mid-drive.
+- [ ] Start-up: the textures are what it waits for now (see "Starting up faster"): split between two
+      workers, or made cheaper still.
 - [ ] **Bake lighting into vertex colours; use fog** for atmosphere and draw distance.
 - [x] **Object pools** for particles (preallocated arrays, live ones first) and chunks (each slot
       of the ring keeps its buffers).
@@ -3609,6 +3659,11 @@ Ranked by the frame-budget measurements (biggest win for fullscreen ultrawide fi
   for just the flat-ground tests): drop, acceleration, braking, cornering, handbrake, parking on
   slopes, a ramp jump, 20 minutes each of random driving from two groups of 4 places, 40
   minutes of following the road, and cost per frame.
+- **`bench/startup.mjs`**: how long the game takes to start, in a fresh headless Chrome each run:
+  when the first frame is done, main.js's marks (`performance.mark`), the fetches, and a CPU profile
+  of the load (`node bench/startup.mjs [url] [runs] [top]`). `THROTTLE=8000,40` slows the network (kbit/s,
+  ms a request), `FILES=1` lists each fetch, `WAIT=ms` waits longer; page errors and failed requests
+  are printed. Point it at `dist` served on another port to measure what's deployed.
 - **`bench/keepup.js`**: whether chunk building keeps up at top speed: the camera driven straight
   across the land, frame by frame, as main.js builds; frames that found a hole, building per
   frame, startup (`node bench/keepup.js`).
