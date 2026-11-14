@@ -28,7 +28,9 @@ const ROOT = new URL('../', import.meta.url);
 // --- A page, as little of one as main.js needs ---
 
 const noop = () => {};
-const element = () => ({ style: {}, classList: { add: noop, remove: noop, toggle: noop }, append: noop, addEventListener: noop });
+// (An element is also a canvas to draw the hint's lettering into: ui.js.)
+const element = () => ({ style: { setProperty: noop }, classList: { add: noop, remove: noop, toggle: noop }, append: noop, addEventListener: noop,
+  getContext: () => ({ fillRect: noop }) });
 const canvas = { ...element(), width: 300, height: 150, getContext: () => gl, requestFullscreen: noop };
 Object.assign(globalThis, {
   window: globalThis, location: { search: `?${query}`, reload: noop },

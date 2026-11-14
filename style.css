@@ -2,19 +2,48 @@ body { margin: 0; overflow: hidden; background: #000; }
 /* pixelated: scale the small canvas up in sharp square blocks, not smoothed. main.js sizes it. */
 canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; image-rendering: pixelated; }
 
-/* The controls hint (ui.js): pale on a dark band at the bottom, fading away once driving. */
+/* The controls hint (ui.js): pixel lettering and keycaps along the bottom, straight over the
+   picture (no panel behind them: each has a dark edge of its own to stand out by), sliding away once
+   driving. Everything is in whole blocks of --u px, like the game's own pixels: the letters
+   (canvases, a font pixel a block) and the keys' stepped corners. */
 body { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .hint {
+  --u: 2px;
+  /* Corners cut in a step, one block in: no curves. */
+  --stepped: polygon(var(--u) 0, calc(100% - var(--u)) 0, calc(100% - var(--u)) var(--u), 100% var(--u),
+    100% calc(100% - var(--u)), calc(100% - var(--u)) calc(100% - var(--u)), calc(100% - var(--u)) 100%, var(--u) 100%,
+    var(--u) calc(100% - var(--u)), 0 calc(100% - var(--u)), 0 var(--u), var(--u) var(--u));
   position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
-  max-width: calc(100vw - 32px); box-sizing: border-box;
-  display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px;
-  padding: 6px 12px; background: rgba(8, 10, 12, 0.55); color: #c9cfc4;
-  font: 12px/1.4 ui-monospace, Menlo, monospace; pointer-events: none;
-  transition: opacity 1.5s;
+  width: max-content; max-width: calc(100vw - 32px); box-sizing: border-box;
+  display: flex; flex-direction: column; align-items: center; gap: calc(7 * var(--u));
+  padding: calc(4 * var(--u)) calc(6 * var(--u));
+  pointer-events: none;
+  /* It comes up from under the screen's edge as the game starts, and goes back down there (no fading). */
+  transition: transform 0.45s cubic-bezier(0.2, 0.7, 0.3, 1);
+  animation: hint-up 0.45s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
 }
-.hint.hidden { opacity: 0; }
-.hint span { white-space: nowrap; }
-.hint kbd { font: inherit; color: #eef2e6; padding: 0 4px; border: 1px solid rgba(238, 242, 230, 0.35); }
+.hint.hidden { transform: translate(-50%, calc(100% + 24px)); transition-timing-function: cubic-bezier(0.6, 0, 0.8, 0.4); }
+@keyframes hint-up { from { transform: translate(-50%, calc(100% + 24px)); } }
+/* The dark edge: a block's width of shadow each way, hard-edged. */
+.hint .item > canvas, .hint .key, .hint .arrows { filter: drop-shadow(var(--u) 0 0 #0a0d0b) drop-shadow(calc(-1 * var(--u)) 0 0 #0a0d0b) drop-shadow(0 var(--u) 0 #0a0d0b) drop-shadow(0 calc(-1 * var(--u)) 0 #0a0d0b); }
+.hint canvas { display: block; width: calc(var(--w) * var(--u)); height: calc(5 * var(--u)); image-rendering: pixelated; }
+.hint .row { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: calc(6 * var(--u)) calc(14 * var(--u)); }
+.hint .item { display: flex; align-items: center; gap: calc(4 * var(--u)); }
+/* A keycap: a pale top, lit along its upper edge, over a darker front edge, as a key seen from above
+   and in front; the space bar wider; the arrows as on a keyboard, up over left, down and right. */
+.hint .key {
+  display: flex; justify-content: center; align-items: center; box-sizing: border-box;
+  min-width: calc(11 * var(--u)); height: calc(11 * var(--u)); padding: 0 calc(3 * var(--u)) calc(2 * var(--u));
+  background: #cfc9b2; box-shadow: inset 0 var(--u) 0 #f3efdc, inset 0 calc(-2 * var(--u)) 0 #7b755f;
+  clip-path: var(--stepped);
+}
+.hint .key.wide { min-width: calc(34 * var(--u)); }
+.hint .key.yellow { background: #ffd23f; box-shadow: inset 0 var(--u) 0 #fff0a8, inset 0 calc(-2 * var(--u)) 0 #a9790a; }
+.hint .arrows { display: grid; grid-template-columns: repeat(3, auto); gap: var(--u); }
+.hint .arrows .key:first-child { grid-column: 2; }
+.hint .arrows .key:nth-child(2) { grid-column: 1; }
+/* H, on its own row in the middle: a yellow frame round it too. */
+.hint .toggle { padding: calc(2 * var(--u)) calc(3 * var(--u)); box-shadow: inset 0 0 0 var(--u) #ffd23f; clip-path: var(--stepped); }
 
 /* The joystick (ui.js): a faint ring resting at the bottom left, under the thumb while it's held. */
 .joystick {

@@ -208,6 +208,64 @@ The cube (`shaders/cube.*`) is no longer in the game, but `bench/frames.html` st
 
 ## Measurements
 
+### The controls hint in pixels; sound off to begin with (14 Nov 2026)
+
+Asked for: a nicer starting help, pixellated, the keys key-shaped, "[H] hide/show help" in the
+middle in yellow; then smaller, no background, M not to read as H, and the sound off by default.
+ui.js draws the lettering itself: a 3 × 5 font (M and W 5 wide, the arrows 5 × 5) into small
+canvases scaled up in 2 px blocks (`--u`, style.css), so no font loads and every browser shows the
+same pixels. Keys are keycaps (a lit top edge, a darker front, stepped corners), Space a bar, the
+arrows laid out as on a keyboard; H on its own row above, yellow, framed. No panel behind: each
+letter and key has a one-block dark edge (`drop-shadow`). `sound.js` starts muted; M turns it on.
+Touch screens have no M: no sound there until there's a button for it.
+
+### Cedar plantations: no rows, mixed trees, a patchy floor, a ragged edge, and rarer (14 Nov 2026)
+
+Asked for: "they are evenly spaced in rows; they all look the same with the same textures; there
+isn't enough variety in the ground; they all neatly stop by the road (unrealistic)", and "the cedar
+regions should be rare but are quite common".
+
+- **Rarer:** one parcel in 0.07, not 0.22 (7.0% of a 10 × 10 km square, was 22.7%): `CEDAR_ODDS`, in
+  terrain.js and terrain.vert. The parcels left are among those there were (the same hash, a lower
+  bar). Roads through one: `spawn=324,-779` (527 m from the start), `spawn=826,-1606`; inside a
+  stand, off the road: `spawn=250,-900,at,200`. (`spawn=500,-900`, the old notes', is bamboo now.)
+- **No rows:** a tree anywhere in its 3 m square but the outer 0.3 m (it was within 0.2 m of the
+  middle), and whether there is one by how thick the stand is (`grove`): thick and thin on a 45 m
+  wave, down to a tenth in a glade, where the meadow's grass now grows (terrain.frag).
+- **Mixed trees:** a stand's age on a 70 m wave and each tree's own, 14-28 m (18-28, all alike);
+  trunks 11-31 cm, how stout its own number (15-25, by height). Young ones, 3.5-7 m, thin, their
+  crowns down to the ground and broad (`cedarGrown`, by height, in bamboo.glsl): 6% of trees, up to
+  half where the stand is thin. They don't stop the car: under 10 cm round they bend aside, as
+  bamboo does (`SAPLING`). Per trunk (stalk.vert): 0.65-1.25 as bright, some weathered grey, some
+  mossy from the foot, the bark from its own place up the texture. Per crown (leaves.vert): from
+  0.33-0.63 of the height (0.45), 0.75-1.35 as broad, darker and lighter, a few bronze. The same in
+  the far card (the same shader), so nothing changes where near gives way to far.
+- **The floor** (terrain.frag, two `noise3` a pixel in a parcel): needles rusty and dull in 14 m
+  drifts, moss in 5 m patches, bare earth in others, their edges frayed by the litter's texels; less
+  shade (`CEDAR_SHADE` 0.55 → 0.45: it was too dark to see any of it).
+- **By the road:** the stand starts 3-11 m back, wandering on a 19 m wave, and thins out over 5 m
+  towards it (a line 3-4 m off, everywhere); the verge's grass runs in under the trees in tongues
+  up to 5 m further (a third `noise3`, near the road only).
+
+Then, the same day ("much better but: no cherry blossom trees in the cedar area; the cedar ground
+texture should continue all the way to the edge of the road; it's a biome so they should be rare
+but each section should be massive"):
+
+- **A biome:** squares 1,100 m across (240), their edges wavering by up to 130 m on a 380 m wave,
+  one in 0.08 of them (`CEDAR_CELL`, `CEDAR_ODDS`, `CEDAR_WARP`, in terrain.js and terrain.vert). The
+  nearest to the start with a road in it is 2 km off: `spawn=2404,-1190`, `spawn=2394,-1345`. (The
+  spawns above are bamboo again.)
+- **No cherries among the cedars** (`groupIn`: a cherry that would stand in one is left out; the
+  maples and broadleaf trees stay). 0 of 85 trees found among them round six places.
+- **The cedars' floor up to the road's edge:** no verge grass and no meadow in a cedar forest
+  (terrain.frag); the grass tongues and the glades' meadow above are gone again, and their `noise3`.
+
+Cost, on a busy machine (load average 14): `bench/build.mjs` 0.740 → 0.826 ms a chunk (its square
+has parcels: three noises in `grove` there, at every vertex and tree; in the workers). Headless
+Chrome at 576 × 360, 14 s of `autodrive=road&spawn=324,-779`, new against old: terrain 0.60 → 0.79
+ms, leaves 0.58 → 0.69, everything else up a little too (the car's pass doubled: noise), JS 0.97
+both. From the usual spawn, 12 s: 6 and 2 late frames of ~665, the old 5. Zen not measured.
+
 ### Starting up faster (14 Nov 2026)
 
 Asked for: optimisations, and shorter start-up. Measured with `bench/startup.mjs` (new: a fresh

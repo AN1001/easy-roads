@@ -3,9 +3,52 @@
 // Phones and tablets: a touch screen, and no mouse or trackpad to point with.
 export const touchScreen = matchMedia('(pointer: coarse)').matches && navigator.maxTouchPoints > 0;
 
+// The hint's lettering: a font of our own, 3 × 5 pixels a letter (each row's 3 bits, top to bottom),
+// drawn into small canvases that the page scales up in sharp blocks, as it does the game's picture:
+// real pixels in every browser, with no font to load. The arrows are 5 × 5 (ARROWS: the wider glyphs).
+const FONT = {
+  A: '25755', B: '65656', C: '34443', D: '65556', E: '74647', F: '74644', G: '34553', H: '55755', I: '72227',
+  J: '11152', K: '55655', L: '44447', N: '65555', O: '75557', P: '65644', Q: '75571', R: '65655',
+  S: '34216', T: '72222', U: '55557', V: '55552', X: '55255', Y: '55222', Z: '71247',
+  '/': '11244', ' ': '00000',
+};
+// (M and W are 5 wide: at 3, M was H with one more pixel, and read as it.)
+const ARROWS = {
+  M: ['10001', '11011', '10101', '10001', '10001'], W: ['10001', '10001', '10101', '11011', '10001'],
+  '↑': ['00000', '00100', '01110', '11111', '00000'], '↓': ['00000', '11111', '01110', '00100', '00000'],
+  '←': ['00010', '00110', '01110', '00110', '00010'], '→': ['01000', '01100', '01110', '01100', '01000'],
+};
+// `text` as a canvas, a pixel of the font a pixel of it (CSS sizes it: --u px a pixel), in `color`.
+function lettering(text, color) {
+  const rows = [...text.toUpperCase()].map(c => ARROWS[c] ?? [...(FONT[c] ?? FONT[' '])].map(n => Number(n).toString(2).padStart(3, '0')));
+  const canvas = document.createElement('canvas');
+  canvas.width = rows.reduce((w, glyph) => w + glyph[0].length + 1, -1);
+  canvas.height = 5;
+  canvas.style.setProperty('--w', canvas.width);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = color;
+  let x = 0;
+  for (const glyph of rows) {
+    glyph.forEach((row, y) => [...row].forEach((bit, k) => { if (bit === '1') ctx.fillRect(x + k, y, 1, 1); }));
+    x += glyph[0].length + 1;
+  }
+  return canvas;
+}
+// A key: its cap, with what's printed on it. `kind`: 'wide' for the space bar, 'yellow' for H.
+const INK = '#20241c', PALE = '#e9e5d2', YELLOW = '#ffd23f';
+function keycap(label, kind = '') {
+  const key = document.createElement('span');
+  key.className = `key ${kind}`;
+  key.append(lettering(label, INK));
+  return key;
+}
+// What's shown: H on a row of its own, in the middle, in yellow, to catch the eye first (asked for,
+// 14 Nov 2026); under it, left to right, the keys (several: the arrows, laid out as on a keyboard)
+// and what they do.
 const KEYS = [
-  ['↑ ↓ ← →', 'drive'], ['Space', 'handbrake'], ['T', 'tow to the road'], ['R', 'back on wheels'],
-  ['F', 'full screen'], ['M', 'sound'], ['H', 'this help'],
+  [['H'], 'hide / show help'],
+  [['↑', '←', '↓', '→'], 'drive'], [['Space'], 'handbrake'], [['T'], 'tow to road'],
+  [['R'], 'flip upright'], [['F'], 'full screen'], [['M'], 'sound on / off'],
 ];
 const SHOWN_FOR = 8;  // s after the first press, then it fades
 
@@ -14,13 +57,23 @@ const SHOWN_FOR = 8;  // s after the first press, then it fades
 export function createHint() {
   const hint = document.createElement('div');
   hint.className = 'hint';
-  for (const [key, what] of KEYS) {
-    const item = document.createElement('span');
-    const kbd = document.createElement('kbd');
-    kbd.textContent = key;
-    item.append(kbd, ` ${what}`);
-    hint.append(item);
+  const row = document.createElement('div');
+  row.className = 'row';
+  for (const [keys, what] of KEYS) {
+    const item = document.createElement('span'), yellow = keys[0] === 'H';
+    item.className = yellow ? 'item toggle' : 'item';
+    if (keys.length > 1) {
+      const arrows = document.createElement('span');
+      arrows.className = 'arrows';
+      arrows.append(...keys.map(key => keycap(key)));
+      item.append(arrows);
+    } else {
+      item.append(keycap(keys[0], yellow ? 'yellow' : keys[0] === 'Space' ? 'wide' : ''));
+    }
+    item.append(lettering(what, yellow ? YELLOW : PALE));
+    (yellow ? hint : row).append(item);
   }
+  hint.append(row);
   if (!touchScreen) document.body.append(hint);
   let timer = 0;
   return {

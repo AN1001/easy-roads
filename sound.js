@@ -41,7 +41,7 @@ async function loadBuffer(ctx, url) {
 }
 
 export function createSound() {
-  let ctx = null, master = null, muted = false, started = 0;
+  let ctx = null, master = null, muted = true, started = 0;  // off until M turns it on (asked for, 14 Nov 2026)
   let engine = null, engineGain = null, engineTone = null, grit = null;
   const gains = {};  // name: GainNode, for update to turn up and down
   let knockBudget = 0;
