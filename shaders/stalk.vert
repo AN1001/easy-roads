@@ -29,7 +29,7 @@ const float TAPER = 0.45;        // thinner by this much at the tip
 const float MIN_PIXELS = 0.9;    // across, at least
 // Young culms are green; older ones yellower and duller.
 const vec3 YOUNG = vec3(0.26, 0.38, 0.13), OLD = vec3(0.40, 0.40, 0.20);
-const vec3 CEDAR_BARK = vec3(0.25, 0.16, 0.11);
+const vec3 CEDAR_BARK = vec3(0.25, 0.16, 0.11), CEDAR_GREY = vec3(0.19, 0.17, 0.15), CEDAR_MOSS = vec3(0.13, 0.19, 0.08);
 const float CEDAR_TAPER = 0.6;
 const float CULM_LAYER = 4.0, CEDAR_BARK_LAYER = 15.0;
 
@@ -54,7 +54,16 @@ void main() {
   vUV = vec2(roundU, h * CULM_TEXELS_PER_METRE) / TEXTURE_SIZE;
   vLayer = cedar ? CEDAR_BARK_LAYER : CULM_LAYER;
   float age = stalkRandom();
-  vec3 tint = cedar ? CEDAR_BARK * (0.85 + 0.3 * age) : mix(YOUNG, OLD, age * age);
+  vec3 tint = mix(YOUNG, OLD, age * age);
+  if (cedar) {
+    // Each trunk its own: darker or lighter, some weathered grey, some green with moss and lichen
+    // up from the foot; and its bark from its own place up the texture. (All one red-brown, 0.85 to
+    // 1.15 as bright, until 14 Nov 2026: "they all look the same".)
+    float grey = fract(age * 7.31), mossy = fract(age * 13.7);
+    tint = mix(CEDAR_BARK, CEDAR_GREY, smoothstep(0.45, 1.0, grey)) * (0.65 + 0.6 * age);
+    tint = mix(tint, CEDAR_MOSS, smoothstep(0.55, 0.9, mossy) * 0.7 * (1.0 - min(2.0 * up, 1.0)));
+    vUV.y += grey;
+  }
   // Lit by the daylight and the headlight; glossy, and more so wet, so seen at a glancing angle its
   // edges shine with the sky.
   vec3 toCamera = normalize(uCamera.xyz - pos);

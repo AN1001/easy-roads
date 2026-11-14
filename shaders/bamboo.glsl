@@ -68,6 +68,12 @@ bool isCedar() {
   return look.y >= CEDAR_STRIP;
 }
 
+// How grown a cedar `height` m tall is: 0 a young one (terrain.js's CEDAR_YOUNG: 3.5-7 m), its crown
+// down to the ground and broad for its height; 1 full grown, a bare trunk under a narrow crown.
+float cedarGrown(float height) {
+  return smoothstep(6.0, 15.0, height);
+}
+
 const float BURIED = 0.3;      // m of each stalk below the ground: coarser land may be drawn a little lower
 
 // The camera, following the car through a grove, bends stalks aside too: those within CAMERA_REACH

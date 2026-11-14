@@ -975,7 +975,21 @@ const GROVE_BANK = 2, GROVE_BANK_TO = 8;  // m from the water: none nearer; as t
 // (bankIn), thick by BANK_GROVE_TO (4 Oct 2026: asked for, bamboo a little way down the banks).
 const BANK_GROVE = 0.3, BANK_GROVE_TO = 2.5, BANK_GROVE_WAVE = 35;  // m
 function grove(x, z, road, river = riverDistance(x, z)) {
-  if (cedar(x, z)) return smoothstep(CEDAR_FROM, CEDAR_TO, road) * smoothstep(RIVER_HALF + GROVE_BANK, RIVER_HALF + GROVE_BANK_TO, river);
+  if (cedar(x, z)) {
+    // How thick the stand is here: mostly thick, thinner in places, with a glade now and then. And
+    // how far back from the road it starts, which wanders (CEDAR_FROM to CEDAR_FROM + CEDAR_BACK m),
+    // thinning out over CEDAR_THIN m towards it: a ragged edge, a few trees out in front, not a wall.
+    if (road < CEDAR_FROM) return 0;
+    let edge = 1;  // (the edge's noise only where the road's near enough for it to matter)
+    if (road < CEDAR_FROM + CEDAR_BACK + CEDAR_THIN) {
+      const back = CEDAR_FROM + CEDAR_BACK * smoothstep(-0.5, 0.6, noise(x / CEDAR_BACK_WAVE, z / CEDAR_BACK_WAVE, 173));
+      edge = smoothstep(back, back + CEDAR_THIN, road);
+      if (edge === 0) return 0;
+    }
+    const stand = noise(x / CEDAR_STAND, z / CEDAR_STAND, 171) + 0.35 * noise(x / 13, z / 13, 172);
+    return (CEDAR_GLADE + (1 - CEDAR_GLADE) * smoothstep(-0.6, -0.05, stand)) * edge
+      * smoothstep(RIVER_HALF + GROVE_BANK, RIVER_HALF + GROVE_BANK_TO, river);
+  }
   if (road < GROVE_FROM) return 0;
   let bank = smoothstep(RIVER_HALF + GROVE_BANK, RIVER_HALF + GROVE_BANK_TO, river);
   if (bank < 1) {
@@ -990,25 +1004,37 @@ function grove(x, z, road, river = riverDistance(x, z)) {
 
 // --- Cedar plantations ---
 //
-// Here and there, in place of the bamboo, a plantation of Japanese cedar (sugi): parcels of land
-// CEDAR_CELL m square, their edges wavering by up to CEDAR_WARP m, one in CEDAR_ODDS of them,
-// planted in rows (see plantBamboo) and, as plantations are, edge to edge with the forest round them.
-// Within one, the grove is as thick as it gets (none within CEDAR_FROM m of a road, all of it from
-// CEDAR_TO; none by the rivers, as the bamboo's): no clearings, and no bamboo down the banks.
+// Here and there, in place of the bamboo, a forest of Japanese cedar (sugi): a biome, rare but big
+// (asked for, 14 Nov 2026: 240 m parcels, one in 0.22 and then 0.07 of them, until then). Squares of
+// land CEDAR_CELL m across, their edges wavering by up to CEDAR_WARP m, one in CEDAR_ODDS of them,
+// edge to edge with the forest round them. Within one (grove): stands thick and thin, on
+// a wave of CEDAR_STAND m, down to CEDAR_GLADE of the thickest in a glade; none within CEDAR_FROM m
+// of a road, and from there a ragged edge that wanders back from it (see grove); none by the rivers,
+// as the bamboo's, and no bamboo down the banks.
 // terrain.vert works the same parcels out again, for the ground under them (must match its CEDAR_*).
-const CEDAR_CELL = 240, CEDAR_ODDS = 0.22, CEDAR_WARP = 30, CEDAR_WARP_WAVE = 90;  // m, -, m, m
-const CEDAR_FROM = 3, CEDAR_TO = 4;  // m from the road's edge
+const CEDAR_CELL = 1100, CEDAR_ODDS = 0.08, CEDAR_WARP = 130, CEDAR_WARP_WAVE = 380;  // m, -, m, m
+const CEDAR_FROM = 3, CEDAR_BACK = 8, CEDAR_BACK_WAVE = 19, CEDAR_THIN = 5;  // m
+const CEDAR_STAND = 45, CEDAR_GLADE = 0.1;  // m, -
 export function cedar(x, z) {
   const wx = x + CEDAR_WARP * Math.sin(z / CEDAR_WARP_WAVE), wz = z + CEDAR_WARP * Math.sin(x / CEDAR_WARP_WAVE);
   return hash(Math.floor(wx / CEDAR_CELL), Math.floor(wz / CEDAR_CELL), 170) < CEDAR_ODDS * 4294967296;
 }
-// The trees: one in each 3 m square of a grid (2 × 2 of the bamboo's squares), within CEDAR_JITTER m
-// of its middle, but for one in CEDAR_GAPS (gone, or never planted); 18-28 m tall, 15-25 cm round at the foot,
-// standing straight (a little either way). As stalks (the same STALK_FLOATS, drawn by bamboo.js and
-// its shaders), but wearing CEDAR_STRIP or more for their strip: bamboo.glsl's sign of a cedar.
-const CEDAR_JITTER = 0.4, CEDAR_GAPS = 0.07;  // m, -
-const CEDAR_TALL = 18, CEDAR_TALLER = 10, CEDAR_RADIUS = 0.15, CEDAR_THICKER = 0.1, CEDAR_LEAN = 0.02;  // m, m, m, m, rad
+// The trees: one or none in each 3 m square (2 × 2 of the bamboo's squares), anywhere in it but its
+// outer CEDAR_MARGIN m (so no rows: on a grid, within 0.2 m of each square's middle, until 14 Nov 2026,
+// "evenly spaced in rows"), more likely the thicker the stand, but for one in CEDAR_GAPS. Of mixed
+// ages: a stand's own (cedarAge, on a wave of CEDAR_AGE_WAVE m) and each tree's, CEDAR_TALL to
+// CEDAR_TALL + 2 × CEDAR_TALLER m tall, CEDAR_RADIUS m round at the foot and up to CEDAR_THICKER
+// more; and young ones, CEDAR_YOUNG to twice that, thin, their crowns down to the ground (leaves.vert,
+// by their height): a few everywhere, more where the stand is thin, at its edges and in its glades.
+// Standing straight (a little either way; the young ones less so). As stalks (the same
+// STALK_FLOATS, drawn by bamboo.js and its shaders), but wearing CEDAR_STRIP or more for their
+// strip: bamboo.glsl's sign of a cedar.
+const CEDAR_MARGIN = 0.3, CEDAR_GAPS = 0.07;  // m, -
+const CEDAR_TALL = 14, CEDAR_TALLER = 7, CEDAR_RADIUS = 0.11, CEDAR_THICKER = 0.2, CEDAR_LEAN = 0.02;  // m, m, m, m, rad
+const CEDAR_YOUNG = 3.5, CEDAR_YOUNG_ODDS = 0.06, CEDAR_YOUNG_THIN = 0.5, CEDAR_AGE_WAVE = 70;  // m, -, -, m
 export const CEDAR_STRIP = 32;
+// How old the stand at (x, z) is, 0 to 1.
+const cedarAge = (x, z) => smoothstep(-0.6, 0.6, noise(x / CEDAR_AGE_WAVE, z / CEDAR_AGE_WAVE, 174));
 
 // Stalks: in each PLANT × PLANT m square of the world, one or none, at a random point in it, more
 // likely the thicker the grove there. Each is 7-15 m tall and 7-16 cm across (the taller the
@@ -1241,23 +1267,28 @@ function plantBamboo(slot, strip) {
       const planted = cedar(slot.x + x, slot.z + z);
       if (planted) {
         if (si & 1 || sj & 1) continue;
-        x = (i + 1) * PLANT + CEDAR_JITTER * ((where & 1023) / 1024 - 0.5); z = (j + 1) * PLANT + CEDAR_JITTER * ((where >>> 10 & 1023) / 1024 - 0.5);
+        const room = 2 * PLANT - 2 * CEDAR_MARGIN;
+        x = i * PLANT + CEDAR_MARGIN + room * (where & 1023) / 1024; z = j * PLANT + CEDAR_MARGIN + room * (where >>> 10 & 1023) / 1024;
       }
       const gx = Math.min(Math.floor(x / s), CHUNK_QUADS - 1), gz = Math.min(Math.floor(z / s), CHUNK_QUADS - 1);
       const fx = x / s - gx, fz = z / s - gz, o = (gz * CHUNK_VERTS + gx) * S, p = gz * CHUNK_VERTS + gx;
       const ea = e[p], eb = e[p + 1], ec = e[p + CHUNK_VERTS], ed = e[p + CHUNK_VERTS + 1];
       const edge = 0.01 * (ea + (eb - ea) * fx + (ec - ea) * fz + (ea - eb - ec + ed) * fx * fz);
-      if ((where >>> 20 & 1023) / 1024 >= grove(slot.x + x, slot.z + z, edge) * (planted ? 1 - CEDAR_GAPS : 1)) continue;
+      const thick = grove(slot.x + x, slot.z + z, edge);
+      if ((where >>> 20 & 1023) / 1024 >= thick * (planted ? 1 - CEDAR_GAPS : 1)) continue;
       const a = v[o], b = v[o + S], c = v[o + next], d = v[o + next + S];
       const y = 0.01 * (fx + fz <= 1 ? a + (b - a) * fx + (c - a) * fz : d - (d - c) * (1 - fx) - (d - b) * (1 - fz));
       const look = hash(si, sj, 151), size = (look & 255) / 255;
       if (planted) {
         const f = count * STALK_FLOATS;
         stalks[f] = slot.x + x; stalks[f + 1] = y; stalks[f + 2] = slot.z + z;
-        stalks[f + 3] = CEDAR_TALL + CEDAR_TALLER * size;
-        stalks[f + 4] = CEDAR_RADIUS + CEDAR_THICKER * size;
+        // (Its own numbers: how big for its age, how stout for its height, whether it's a young one.)
+        const stout = (look >>> 29) / 7, young = (look >>> 10 & 7) / 8 < CEDAR_YOUNG_ODDS + CEDAR_YOUNG_THIN * (1 - thick);
+        const age = young ? 0 : cedarAge(slot.x + x, slot.z + z), lean = CEDAR_LEAN * (young ? 3 : 1);
+        stalks[f + 3] = young ? CEDAR_YOUNG * (1 + size) : CEDAR_TALL + CEDAR_TALLER * (age + size);
+        stalks[f + 4] = young ? 0.04 + 0.04 * size : CEDAR_RADIUS + CEDAR_THICKER * (0.3 * age + 0.3 * size + 0.4 * stout * stout);
         stalks[f + 5] = CEDAR_STRIP + (look >>> 8 & 3);
-        stalks[f + 6] = CEDAR_LEAN * ((look >>> 13 & 255) / 127.5 - 1); stalks[f + 7] = CEDAR_LEAN * ((look >>> 21 & 255) / 127.5 - 1);
+        stalks[f + 6] = lean * ((look >>> 13 & 255) / 127.5 - 1); stalks[f + 7] = lean * ((look >>> 21 & 255) / 127.5 - 1);
         count++;
         continue;
       }
@@ -1320,7 +1351,8 @@ function plantClumps(slot) {
       const f = count * CLUMP_FLOATS;
       clumps[f] = slot.x + x; clumps[f + 1] = y; clumps[f + 2] = slot.z + z;
       // (A stand of cedars' height, negative: clump.vert's sign of one.)
-      clumps[f + 3] = cedar(slot.x + x, slot.z + z) ? -(CEDAR_TALL + CEDAR_TALLER * (look & 255) / 255) : CLUMP_TALL + CLUMP_TALLER * (look & 255) / 255;
+      clumps[f + 3] = cedar(slot.x + x, slot.z + z) ? -(CEDAR_TALL + CEDAR_TALLER * (cedarAge(slot.x + x, slot.z + z) + (look & 255) / 255))
+        : CLUMP_TALL + CLUMP_TALLER * (look & 255) / 255;
       slot.clumpSquares[count] = i + j * squares;
       count++;
     }
@@ -1918,6 +1950,7 @@ export function createTerrain({ draw = Infinity, ahead = 0, detail = [], radius 
       const a = random(i, j, 190 + 2 * k) * 2 * Math.PI, r = k === 0 ? 0 : GROUP_RADIUS * Math.sqrt(random(i, j, 191 + 2 * k));
       const x = cx + r * Math.cos(a), z = cz + r * Math.sin(a);
       if (group.some(t => Math.hypot(t.x - x, t.z - z) < TREE_APART)) continue;
+      if (kind === 'cherry' && cedar(x, z)) continue;  // no blossom among the cedars (asked for, 14 Nov 2026)
       const tree = treeAt(x, z, kind, hash(i, j, 220 + k));
       if (tree) group.push(tree);
     }

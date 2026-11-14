@@ -27,9 +27,9 @@ const vec3 LEAF = vec3(0.18, 0.30, 0.09);  // the texture's colours are shades o
 const float LEAVES_LAYER = 5.0, FAR_LEAVES_LAYER = 8.0;
 const float LEAVES_FROM = 0.45;  // of the stalk's height
 const float SPREAD = 0.17;       // each side of the stalk, as a share of its height
-const vec3 CEDAR_LEAF = vec3(0.12, 0.20, 0.12);
+const vec3 CEDAR_LEAF = vec3(0.12, 0.20, 0.12), CEDAR_BRONZE = vec3(0.19, 0.19, 0.09), CEDAR_FRESH = vec3(0.15, 0.26, 0.11);
 const float CEDAR_LAYER = 16.0, FAR_CEDAR_LAYER = 17.0;
-const float CEDAR_FROM = 0.45, CEDAR_SPREAD = 0.075;
+const float CEDAR_FROM = 0.48, CEDAR_FROM_OWN = 0.3, CEDAR_SPREAD = 0.075;  // (from 0.33 to 0.63 of its height)
 
 void main() {
   int k = loadStalk(), corner = k % 6, card = k / 6;
@@ -38,17 +38,24 @@ void main() {
   float up = far ? float(corner >> 1) : float(corner >> 1) / float(CARD_ROWS);  // 0 to 1
   float height = stalk.w, random = stalkRandom();
   bool cedar = isCedar();
-  float h = mix((cedar ? CEDAR_FROM : LEAVES_FROM) * height, height + (cedar ? 0.5 : 0.3), up);
+  // A cedar's crown: from lower or higher up its trunk, narrower or broader, each its own; a young
+  // one's from near the ground, and broad for its height (bamboo.glsl's cedarGrown).
+  float grown = cedarGrown(height), own = fract(random * 5.77), tone = fract(random * 11.3);
+  float from = cedar ? mix(0.1, CEDAR_FROM + CEDAR_FROM_OWN * (own - 0.5), grown) : LEAVES_FROM;
+  float spread = cedar ? mix(0.2, CEDAR_SPREAD * (0.75 + 0.6 * tone), grown) : SPREAD;
+  float h = mix(from * height, height + (cedar ? 0.5 : 0.3), up);
   vec3 axis = stalkAxis(h, stalkTilt());
   vec2 toCamera = normalize(uCamera.xz - axis.xz), side = vec2(-toCamera.y, toCamera.x);
   float angle = float(card) * 1.0472 + 6.2832 * random;
   vec2 out2 = (far ? side : vec2(cos(angle), sin(angle))) * across;
   float flutter = (cedar ? 0.03 : 0.1) * abs(across) * sin(3.1 * uTime.x + 9.0 * random + 2.0 * across + 3.0 * up);
-  vWorldPos = axis + vec3(out2.x, 0.0, out2.y) * (cedar ? CEDAR_SPREAD : SPREAD) * height + vec3(0.0, flutter, 0.0);
+  vWorldPos = axis + vec3(out2.x, 0.0, out2.y) * spread * height + vec3(0.0, flutter, 0.0);
   // Lit mostly from above, and more from the side they reach out towards.
   vec3 normal = normalize(vec3(0.6 * out2.x, 1.0, 0.6 * out2.y));
   float misted = mist(vWorldPos);
-  vScale = (cedar ? CEDAR_LEAF : LEAF) * 2.0 * (daylight(normal) + LAMP_COLOR * headlight(vWorldPos, normal)) * (1.0 - misted);
+  // Darker and lighter crowns, a few gone bronze (as sugi do in the cold), the young ones fresher.
+  vec3 needles = mix(CEDAR_FRESH, mix(CEDAR_LEAF, CEDAR_BRONZE, smoothstep(0.7, 1.0, own)), grown) * (0.75 + 0.5 * tone);
+  vScale = (cedar ? needles : LEAF) * 2.0 * (daylight(normal) + LAMP_COLOR * headlight(vWorldPos, normal)) * (1.0 - misted);
   vAdd = mistColor(vWorldPos) * misted;
   vUV = vec2(0.5 + 0.5 * across, up);
   int shift = int(random * 16.0);

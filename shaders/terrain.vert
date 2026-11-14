@@ -27,7 +27,7 @@ out vec3 vDaylight;     // the daylight on it (sky.glsl), less under the groves
 out vec4 vMist;     // rgb: the mist's colour; a: how much of it
 out float vCedar;   // 1 in a cedar plantation, 0 not
 
-const float GROVE_SHADE = 0.4, CEDAR_SHADE = 0.55;
+const float GROVE_SHADE = 0.4, CEDAR_SHADE = 0.45;
 const float SHORE_UNDER = 0.6, SHINGLE_STEP = 0.35;  // m: as terrain.js's  // the thickest bamboo keeps this much of the sky off the ground
 
 // Vertices along each side of a chunk: must match CHUNK_VERTS in terrain.js.
@@ -38,7 +38,7 @@ const int SIZE = 31, VERTICES = SIZE * SIZE;
 // Whether (x, z) is in a cedar plantation: terrain.js's cedar(), the same parcels, from the same hash
 // (its integer maths is the same here, to the bit). Its edges, from sin in 32-bit floats, can be a
 // few mm out from terrain.js's: no matter, they fall between the trees.
-const float CEDAR_CELL = 240.0, CEDAR_ODDS = 0.22, CEDAR_WARP = 30.0, CEDAR_WARP_WAVE = 90.0;  // terrain.js's
+const float CEDAR_CELL = 1100.0, CEDAR_ODDS = 0.08, CEDAR_WARP = 130.0, CEDAR_WARP_WAVE = 380.0;  // terrain.js's
 bool inCedars(vec2 xz) {
   vec2 warped = xz + CEDAR_WARP * sin(xz.yx / CEDAR_WARP_WAVE);
   ivec2 cell = ivec2(floor(warped / CEDAR_CELL));

@@ -127,6 +127,8 @@ const MAX_MOVING = 4096;  // stalks bent or springing back at once, at most
 // (as trees.js's, for the same reason: the car's wall points are up to 0.7 m apart).
 const WALL_HEIGHT = 2, WALL_RADIUS = 0.36;  // m
 const MAX_NEAR_CEDARS = 256;
+// A young cedar, its trunk under SAPLING m round, doesn't stop the car: it's pushed aside, as a stalk is.
+const SAPLING = 0.1;  // m
 
 // A random number, 0 to 1, for a square of the ground.
 function squareRandom(x, z) {
@@ -210,7 +212,7 @@ export function createBamboo(terrain, far) {
         const stalks = slot.stalks, row = slot.index * MAX_STALKS;
         for (let i = 0; i < slot.stalkCount; i++) {
           const f = i * STALK_FLOATS, x = stalks[f], z = stalks[f + 2];
-          if (stalks[f + 5] >= CEDAR_STRIP) continue;  // it stands firm (cedarWall)
+          if (stalks[f + 5] >= CEDAR_STRIP && stalks[f + 4] >= SAPLING) continue;  // it stands firm (cedarWall)
           if (x < minX || x > maxX || z < minZ || z > maxZ || Math.abs(stalks[f + 1] - tail[1]) >= CAR_ABOVE) continue;
           // Away from the nearest point of the car's line.
           const t = Math.min(Math.max(((x - ax) * ex + (z - az) * ez) / length2, 0), 1);
@@ -265,7 +267,7 @@ export function createBamboo(terrain, far) {
         const stalks = slot.stalks;
         for (let i = 0; i < slot.stalkCount && nearCedarCount < MAX_NEAR_CEDARS; i++) {
           const f = i * STALK_FLOATS;
-          if (stalks[f + 5] < CEDAR_STRIP || Math.abs(stalks[f] - x) > reach || Math.abs(stalks[f + 2] - z) > reach) continue;
+          if (stalks[f + 5] < CEDAR_STRIP || stalks[f + 4] < SAPLING || Math.abs(stalks[f] - x) > reach || Math.abs(stalks[f + 2] - z) > reach) continue;
           const o = 4 * nearCedarCount++;
           nearCedars[o] = stalks[f]; nearCedars[o + 1] = stalks[f + 2];
           nearCedars[o + 2] = Math.max(WALL_RADIUS, stalks[f + 4]); nearCedars[o + 3] = stalks[f + 1];
